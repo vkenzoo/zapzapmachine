@@ -167,21 +167,33 @@ whatsappRoutes.post('/conversas/:conversaId/enviar', async (c) => {
     return c.json({ error: 'Invalid body', details: parsed.error.flatten() }, 400)
   }
 
-  // 1. Busca conversa + instancia
-  const { data: conversa } = await supabase
+  // 1. Busca conversa
+  const { data: conversa, error: errConversa } = await supabase
     .from('conversas')
-    .select('id, telefone, instancia_whatsapp_id, instancias_whatsapp(evolution_instance_id)')
+    .select('id, telefone, instancia_whatsapp_id')
     .eq('id', conversaId)
     .eq('user_id', userId)
     .maybeSingle()
+
+  if (errConversa) {
+    console.error('[enviar] erro query conversa:', errConversa)
+    return c.json({ error: 'Erro ao buscar conversa' }, 500)
+  }
 
   if (!conversa) {
     return c.json({ error: 'Conversa nao encontrada' }, 404)
   }
 
-  const instancia = conversa.instancias_whatsapp as {
-    evolution_instance_id: string | null
-  } | null
+  if (!conversa.instancia_whatsapp_id) {
+    return c.json({ error: 'Conversa sem instancia vinculada' }, 500)
+  }
+
+  // 2. Busca instancia separadamente
+  const { data: instancia } = await supabase
+    .from('instancias_whatsapp')
+    .select('evolution_instance_id')
+    .eq('id', conversa.instancia_whatsapp_id)
+    .maybeSingle()
 
   const instanceName =
     instancia?.evolution_instance_id ?? conversa.instancia_whatsapp_id
