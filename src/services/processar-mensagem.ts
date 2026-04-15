@@ -75,13 +75,17 @@ export const processarMensagem = async (
 
   const telefoneCru = limparTelefone(dados.key.remoteJid)
   const telefoneFmt = formatarTelefone(telefoneCru)
-  const nomeContato = dados.pushName || telefoneFmt
   const isFromMe = dados.key.fromMe === true
+
+  // pushName so eh confiavel em mensagens INCOMING (da pessoa pra gente).
+  // Em OUTGOING (fromMe=true), pushName eh o NOSSO proprio nome, nao do contato.
+  const nomeContatoConfiavel = !isFromMe && dados.pushName ? dados.pushName : null
+  const nomeContato = nomeContatoConfiavel ?? telefoneFmt
 
   // 1. Find or create conversa
   const { data: conversaExistente } = await supabase
     .from('conversas')
-    .select('id, nao_lidas')
+    .select('id, nao_lidas, nome_contato, telefone')
     .eq('user_id', userId)
     .eq('telefone', telefoneFmt)
     .maybeSingle()
@@ -90,6 +94,17 @@ export const processarMensagem = async (
 
   if (conversaExistente) {
     conversaId = conversaExistente.id
+
+    // Se o nome atual eh o telefone (placeholder) e veio pushName confiavel, atualiza
+    if (
+      nomeContatoConfiavel &&
+      conversaExistente.nome_contato === conversaExistente.telefone
+    ) {
+      await supabase
+        .from('conversas')
+        .update({ nome_contato: nomeContatoConfiavel })
+        .eq('id', conversaId)
+    }
   } else {
     const avatarCor = CORES_AVATAR[Math.floor(Math.random() * CORES_AVATAR.length)]
 
