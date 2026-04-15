@@ -25,6 +25,68 @@ const formatarTelefone = (cru: string): string => {
   return `+${cru}`
 }
 
+/**
+ * Retorna extensao de arquivo a partir do mimetype.
+ */
+const extensaoDeMime = (mimetype: string): string => {
+  const map: Record<string, string> = {
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+    'image/gif': 'gif',
+    'audio/ogg': 'ogg',
+    'audio/ogg; codecs=opus': 'ogg',
+    'audio/mp4': 'm4a',
+    'audio/mpeg': 'mp3',
+    'audio/webm': 'webm',
+    'video/mp4': 'mp4',
+    'video/webm': 'webm',
+    'video/quicktime': 'mov',
+    'application/pdf': 'pdf',
+    'application/msword': 'doc',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  }
+  if (map[mimetype]) return map[mimetype]
+  const second = mimetype.split('/')[1]?.split(';')[0]
+  return second ?? 'bin'
+}
+
+/**
+ * Faz upload do base64 da midia pro Supabase Storage e retorna a URL publica.
+ * Retorna null em caso de erro (nao trava o fluxo).
+ */
+const uploadMidiaStorage = async (
+  base64: string,
+  mimetype: string,
+  userId: string,
+  conversaId: string,
+  messageId: string
+): Promise<string | null> => {
+  try {
+    const ext = extensaoDeMime(mimetype)
+    const path = `${userId}/${conversaId}/${messageId}.${ext}`
+    const buffer = Buffer.from(base64, 'base64')
+
+    const { error } = await supabase.storage
+      .from('whatsapp-media')
+      .upload(path, buffer, {
+        contentType: mimetype,
+        upsert: true,
+      })
+
+    if (error) {
+      console.error('[uploadMidia] erro upload:', error)
+      return null
+    }
+
+    const { data } = supabase.storage.from('whatsapp-media').getPublicUrl(path)
+    return data.publicUrl
+  } catch (e) {
+    console.error('[uploadMidia] erro:', e)
+    return null
+  }
+}
+
 type TipoMidia =
   | 'TEXTO'
   | 'IMAGEM'
@@ -158,6 +220,30 @@ export const processarMensagem = async (
     return
   }
 
+  // Pra mensagens de midia, baixa o arquivo via Evolution e sobe no Storage.
+  // Stickers sao ignorados (baixo valor, alto custo de armazenamento).
+  let midiaUrl: string | null = null
+  const tiposComMidia = new Set<TipoMidia>(['IMAGEM', 'AUDIO', 'VIDEO', 'DOCUMENTO'])
+
+  if (tiposComMidia.has(tipoMidia)) {
+    const baixada = await evolution.baixarMidia(instanceName, {
+      key: dados.key,
+      message: dados.message,
+      messageTimestamp: dados.messageTimestamp,
+    })
+
+    if (baixada) {
+      // Usa ID da mensagem do WhatsApp como parte do path (unico, idempotente)
+      midiaUrl = await uploadMidiaStorage(
+        baixada.base64,
+        baixada.mimetype,
+        userId,
+        dados.key.remoteJid.replace(/[^\w]/g, '_'),
+        dados.key.id
+      )
+    }
+  }
+
   const telefoneCru = limparTelefone(dados.key.remoteJid)
   const telefoneFmt = formatarTelefone(telefoneCru)
   const isFromMe = dados.key.fromMe === true
@@ -229,6 +315,7 @@ export const processarMensagem = async (
         tipo: isFromMe ? 'OUTGOING_HUMANO' : 'INCOMING',
         conteudo,
         tipo_midia: tipoMidia,
+        midia_url: midiaUrl,
         status: 'ENVIADA',
       })
     return

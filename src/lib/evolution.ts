@@ -114,6 +114,38 @@ export const evolution = {
       return null
     }
   },
+
+  /**
+   * Baixa o conteudo de uma mensagem com midia (imagem/audio/video/doc).
+   * Recebe o objeto `message` inteiro do webhook e retorna { base64, mimetype }.
+   * Evolution precisa do message original pra decriptar.
+   */
+  baixarMidia: async (
+    instanceName: string,
+    message: unknown
+  ): Promise<{ base64: string; mimetype: string } | null> => {
+    try {
+      const resp = (await evoFetch(
+        `/chat/getBase64FromMediaMessage/${instanceName}`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            message,
+            convertToMp4: false,
+          }),
+        }
+      )) as { base64?: string; mimetype?: string }
+
+      if (!resp.base64) return null
+      return {
+        base64: resp.base64,
+        mimetype: resp.mimetype ?? 'application/octet-stream',
+      }
+    } catch (e) {
+      console.error('[baixarMidia] erro:', e)
+      return null
+    }
+  },
 }
 
 /**
