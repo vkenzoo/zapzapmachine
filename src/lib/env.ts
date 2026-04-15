@@ -18,6 +18,12 @@ const envSchema = z.object({
 
   // CORS
   ALLOWED_ORIGINS: z.string().default('http://localhost:3000'),
+
+  // LLM
+  LLM_PROVIDER: z.enum(['claude', 'openai']).default('claude'),
+  LLM_MODEL: z.string().optional(),
+  ANTHROPIC_API_KEY: z.string().optional(),
+  OPENAI_API_KEY: z.string().optional(),
 })
 
 export type Env = z.infer<typeof envSchema>

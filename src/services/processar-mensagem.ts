@@ -1,5 +1,6 @@
 import { supabase } from '../lib/supabase.js'
 import { evolution } from '../lib/evolution.js'
+import { gerarRespostaIA } from './gerar-resposta-ia.js'
 
 const CORES_AVATAR = [
   '#3b82f6', '#10b981', '#8b5cf6', '#f59e0b',
@@ -282,7 +283,7 @@ export const processarMensagem = async (
   // 1. Find or create conversa
   const { data: conversaExistente } = await supabase
     .from('conversas')
-    .select('id, nao_lidas, nome_contato, telefone')
+    .select('id, nao_lidas, nome_contato, telefone, modo, agente_id')
     .eq('user_id', userId)
     .eq('telefone', telefoneFmt)
     .maybeSingle()
@@ -378,4 +379,16 @@ export const processarMensagem = async (
       nao_lidas: novaContagem,
     })
     .eq('id', conversaId)
+
+  // 4. Trigger IA — se mensagem INCOMING, modo=IA e agente vinculado
+  const conv = conversaExistente as typeof conversaExistente & {
+    modo?: string
+    agente_id?: string | null
+  }
+  if (!isFromMe && conv.modo === 'IA' && conv.agente_id) {
+    // Fire-and-forget — nao bloqueia o webhook
+    gerarRespostaIA(conversaId).catch((e) =>
+      console.error('[processarMensagem] erro ao gerar resposta IA:', e)
+    )
+  }
 }

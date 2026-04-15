@@ -414,6 +414,68 @@ whatsappRoutes.post('/conversas/:conversaId/enviar-midia', async (c) => {
   return c.json(msg)
 })
 
+const vincularAgenteSchema = z.object({
+  agenteId: z.string().uuid().nullable(),
+})
+
+/**
+ * PATCH /whatsapp/conversas/:conversaId/agente
+ * Vincula (ou desvincula) um agente a uma conversa.
+ */
+whatsappRoutes.patch('/conversas/:conversaId/agente', async (c) => {
+  const userId = c.get('userId')
+  const conversaId = c.req.param('conversaId')
+  const body = await c.req.json().catch(() => ({}))
+  const parsed = vincularAgenteSchema.safeParse(body)
+
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid body', details: parsed.error.flatten() }, 400)
+  }
+
+  // Valida ownership da conversa
+  const { data: conversa } = await supabase
+    .from('conversas')
+    .select('id')
+    .eq('id', conversaId)
+    .eq('user_id', userId)
+    .maybeSingle()
+
+  if (!conversa) {
+    return c.json({ error: 'Conversa nao encontrada' }, 404)
+  }
+
+  // Se foi pedido vincular um agente, valida que pertence ao mesmo user
+  if (parsed.data.agenteId) {
+    const { data: agente } = await supabase
+      .from('agentes')
+      .select('id, status')
+      .eq('id', parsed.data.agenteId)
+      .eq('user_id', userId)
+      .maybeSingle()
+
+    if (!agente) {
+      return c.json({ error: 'Agente nao encontrado' }, 404)
+    }
+    if (agente.status !== 'ATIVO') {
+      return c.json({ error: 'Agente esta inativo' }, 400)
+    }
+  }
+
+  const { data, error } = await supabase
+    .from('conversas')
+    .update({ agente_id: parsed.data.agenteId })
+    .eq('id', conversaId)
+    .select('*')
+    .single()
+
+  if (error) {
+    console.error('[vincular-agente] erro:', error)
+    return c.json({ error: 'Erro ao vincular agente' }, 500)
+  }
+
+  return c.json(data)
+})
+
 /**
  * DELETE /whatsapp/:id
  * Desloga + deleta do Evolution + remove do banco.
