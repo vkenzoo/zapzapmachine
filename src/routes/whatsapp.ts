@@ -149,6 +149,88 @@ whatsappRoutes.get('/:id/status', async (c) => {
   }
 })
 
+const enviarSchema = z.object({
+  texto: z.string().min(1).max(4096),
+})
+
+/**
+ * POST /whatsapp/conversas/:conversaId/enviar
+ * Envia uma mensagem via Evolution (WhatsApp real) + salva no banco.
+ */
+whatsappRoutes.post('/conversas/:conversaId/enviar', async (c) => {
+  const userId = c.get('userId')
+  const conversaId = c.req.param('conversaId')
+  const body = await c.req.json().catch(() => ({}))
+  const parsed = enviarSchema.safeParse(body)
+
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid body', details: parsed.error.flatten() }, 400)
+  }
+
+  // 1. Busca conversa + instancia
+  const { data: conversa } = await supabase
+    .from('conversas')
+    .select('id, telefone, instancia_whatsapp_id, instancias_whatsapp(evolution_instance_id)')
+    .eq('id', conversaId)
+    .eq('user_id', userId)
+    .maybeSingle()
+
+  if (!conversa) {
+    return c.json({ error: 'Conversa nao encontrada' }, 404)
+  }
+
+  const instancia = conversa.instancias_whatsapp as {
+    evolution_instance_id: string | null
+  } | null
+
+  const instanceName =
+    instancia?.evolution_instance_id ?? conversa.instancia_whatsapp_id
+
+  if (!instanceName) {
+    return c.json({ error: 'Instancia do WhatsApp nao encontrada' }, 500)
+  }
+
+  // Telefone cru sem +/espaco/hifen pro Evolution
+  const telefoneCru = conversa.telefone.replace(/\D/g, '')
+
+  // 2. Envia via Evolution
+  try {
+    await evolution.enviarTexto(instanceName, telefoneCru, parsed.data.texto)
+  } catch (e) {
+    console.error('[enviar] erro Evolution:', e)
+    return c.json({ error: 'Erro ao enviar mensagem no WhatsApp' }, 502)
+  }
+
+  // 3. Salva no banco
+  const { data: msg, error } = await supabase
+    .from('mensagens')
+    .insert({
+      conversa_id: conversaId,
+      user_id: userId,
+      tipo: 'OUTGOING_HUMANO',
+      conteudo: parsed.data.texto,
+      status: 'ENVIADA',
+    })
+    .select()
+    .single()
+
+  if (error) {
+    console.error('[enviar] erro ao salvar mensagem:', error)
+    return c.json({ error: 'Mensagem enviada mas erro ao salvar historico' }, 500)
+  }
+
+  // 4. Atualiza conversa
+  await supabase
+    .from('conversas')
+    .update({
+      ultima_mensagem: parsed.data.texto,
+      ultima_mensagem_em: new Date().toISOString(),
+    })
+    .eq('id', conversaId)
+
+  return c.json(msg)
+})
+
 /**
  * DELETE /whatsapp/:id
  * Desloga + deleta do Evolution + remove do banco.
