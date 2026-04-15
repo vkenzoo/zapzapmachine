@@ -96,6 +96,51 @@ export const evolution = {
   },
 
   /**
+   * Envia imagem/video/documento via Evolution.
+   * `media` aceita base64 ou URL publica (URL eh preferido pra economizar banda).
+   */
+  enviarMidia: async (
+    instanceName: string,
+    params: {
+      telefone: string
+      mediatype: 'image' | 'video' | 'document'
+      media: string // base64 ou URL
+      mimetype: string
+      caption?: string
+      fileName?: string
+    }
+  ) => {
+    return evoFetch(`/message/sendMedia/${instanceName}`, {
+      method: 'POST',
+      body: JSON.stringify({
+        number: params.telefone,
+        mediatype: params.mediatype,
+        media: params.media,
+        mimetype: params.mimetype,
+        caption: params.caption ?? '',
+        fileName: params.fileName ?? 'file',
+      }),
+    })
+  },
+
+  /**
+   * Envia audio (Mensagem de voz) via Evolution.
+   */
+  enviarAudio: async (
+    instanceName: string,
+    telefone: string,
+    audio: string // base64 ou URL
+  ) => {
+    return evoFetch(`/message/sendWhatsAppAudio/${instanceName}`, {
+      method: 'POST',
+      body: JSON.stringify({
+        number: telefone,
+        audio,
+      }),
+    })
+  },
+
+  /**
    * Busca a URL da foto de perfil publica do contato.
    * Retorna `{ wuid, profilePictureUrl }` quando o contato tem foto publica,
    * ou `{ wuid }` (sem picture) caso nao tenha ou nao seja visivel.

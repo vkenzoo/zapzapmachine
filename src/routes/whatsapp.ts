@@ -243,6 +243,174 @@ whatsappRoutes.post('/conversas/:conversaId/enviar', async (c) => {
   return c.json(msg)
 })
 
+const enviarMidiaSchema = z.object({
+  tipoMidia: z.enum(['IMAGEM', 'AUDIO', 'VIDEO', 'DOCUMENTO']),
+  base64: z.string().min(1), // base64 bruto (sem prefix data:)
+  mimetype: z.string().min(1),
+  fileName: z.string().optional(),
+  legenda: z.string().optional(),
+})
+
+/**
+ * POST /whatsapp/conversas/:conversaId/enviar-midia
+ * Sobe a midia pro Storage, envia via Evolution, salva no banco.
+ */
+whatsappRoutes.post('/conversas/:conversaId/enviar-midia', async (c) => {
+  const userId = c.get('userId')
+  const conversaId = c.req.param('conversaId')
+  const body = await c.req.json().catch(() => ({}))
+  const parsed = enviarMidiaSchema.safeParse(body)
+
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid body', details: parsed.error.flatten() }, 400)
+  }
+
+  const { tipoMidia, base64, mimetype, fileName, legenda } = parsed.data
+
+  // 1. Busca conversa + instancia
+  const { data: conversa } = await supabase
+    .from('conversas')
+    .select('id, telefone, instancia_whatsapp_id')
+    .eq('id', conversaId)
+    .eq('user_id', userId)
+    .maybeSingle()
+
+  if (!conversa || !conversa.instancia_whatsapp_id) {
+    return c.json({ error: 'Conversa nao encontrada' }, 404)
+  }
+
+  const { data: instancia } = await supabase
+    .from('instancias_whatsapp')
+    .select('evolution_instance_id')
+    .eq('id', conversa.instancia_whatsapp_id)
+    .maybeSingle()
+
+  const instanceName =
+    instancia?.evolution_instance_id ?? conversa.instancia_whatsapp_id
+  const telefoneCru = conversa.telefone.replace(/\D/g, '')
+
+  // 2. Upload pro Supabase Storage
+  const extMap: Record<string, string> = {
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+    'image/gif': 'gif',
+    'audio/ogg': 'ogg',
+    'audio/ogg; codecs=opus': 'ogg',
+    'audio/mp4': 'm4a',
+    'audio/mpeg': 'mp3',
+    'audio/webm': 'webm',
+    'video/mp4': 'mp4',
+    'video/webm': 'webm',
+    'video/quicktime': 'mov',
+    'application/pdf': 'pdf',
+  }
+  const ext = extMap[mimetype] ?? mimetype.split('/')[1]?.split(';')[0] ?? 'bin'
+  const msgUuid = crypto.randomUUID()
+  const path = `${userId}/outgoing/${conversaId}/${msgUuid}.${ext}`
+  const buffer = Buffer.from(base64, 'base64')
+
+  const { error: upErr } = await supabase.storage
+    .from('whatsapp-media')
+    .upload(path, buffer, { contentType: mimetype, upsert: true })
+
+  if (upErr) {
+    console.error('[enviar-midia] upload Storage falhou:', upErr)
+    return c.json({ error: 'Falha ao armazenar midia' }, 500)
+  }
+
+  const { data: publicData } = supabase.storage
+    .from('whatsapp-media')
+    .getPublicUrl(path)
+  const midiaUrl = publicData.publicUrl
+
+  // 3. Envia via Evolution (usa URL publica — mais leve que base64)
+  try {
+    if (tipoMidia === 'AUDIO') {
+      await evolution.enviarAudio(instanceName, telefoneCru, midiaUrl)
+    } else if (tipoMidia === 'IMAGEM') {
+      await evolution.enviarMidia(instanceName, {
+        telefone: telefoneCru,
+        mediatype: 'image',
+        media: midiaUrl,
+        mimetype,
+        caption: legenda,
+        fileName: fileName ?? `image.${ext}`,
+      })
+    } else if (tipoMidia === 'VIDEO') {
+      await evolution.enviarMidia(instanceName, {
+        telefone: telefoneCru,
+        mediatype: 'video',
+        media: midiaUrl,
+        mimetype,
+        caption: legenda,
+        fileName: fileName ?? `video.${ext}`,
+      })
+    } else {
+      await evolution.enviarMidia(instanceName, {
+        telefone: telefoneCru,
+        mediatype: 'document',
+        media: midiaUrl,
+        mimetype,
+        caption: legenda,
+        fileName: fileName ?? `document.${ext}`,
+      })
+    }
+  } catch (e) {
+    console.error('[enviar-midia] Evolution falhou:', e)
+    return c.json({ error: 'Falha ao enviar midia no WhatsApp' }, 502)
+  }
+
+  // 4. Preview textual amigavel
+  const iconePorTipo: Record<string, string> = {
+    IMAGEM: '📷',
+    AUDIO: '🎙️',
+    VIDEO: '🎥',
+    DOCUMENTO: '📎',
+  }
+  const preview = legenda
+    ? `${iconePorTipo[tipoMidia] ?? ''} ${legenda}`
+    : `${iconePorTipo[tipoMidia] ?? ''} ${
+        tipoMidia === 'IMAGEM'
+          ? 'Imagem'
+          : tipoMidia === 'AUDIO'
+            ? 'Mensagem de voz'
+            : tipoMidia === 'VIDEO'
+              ? 'Video'
+              : fileName ?? 'Documento'
+      }`
+
+  // 5. Salva no DB
+  const { data: msg, error } = await supabase
+    .from('mensagens')
+    .insert({
+      conversa_id: conversaId,
+      user_id: userId,
+      tipo: 'OUTGOING_HUMANO',
+      conteudo: preview,
+      tipo_midia: tipoMidia,
+      midia_url: midiaUrl,
+      status: 'ENVIADA',
+    })
+    .select()
+    .single()
+
+  if (error) {
+    console.error('[enviar-midia] save mensagem:', error)
+    return c.json({ error: 'Enviado mas erro ao salvar historico' }, 500)
+  }
+
+  await supabase
+    .from('conversas')
+    .update({
+      ultima_mensagem: preview,
+      ultima_mensagem_em: new Date().toISOString(),
+    })
+    .eq('id', conversaId)
+
+  return c.json(msg)
+})
+
 /**
  * DELETE /whatsapp/:id
  * Desloga + deleta do Evolution + remove do banco.
