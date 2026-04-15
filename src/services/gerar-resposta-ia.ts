@@ -5,6 +5,33 @@ import { montarSystemPrompt, type BaseInput } from './montar-prompt.js'
 
 const HISTORICO_MAX = 20
 const TAG_AJUDA = '[PRECISO_AJUDA]'
+const DEBOUNCE_MS = 4000 // agrupa msgs que chegam dentro de 4s
+
+// Timers de debounce por conversa — evita N chamadas ao LLM quando
+// cliente manda varias msgs seguidas.
+const timersPorConversa = new Map<string, NodeJS.Timeout>()
+
+/**
+ * Agenda uma resposta IA com debounce.
+ * Se ja tem timer rodando pra essa conversa, cancela e agenda novo.
+ * Quando o timer vence, chama `gerarRespostaIA` com o historico ja acumulado.
+ */
+export const agendarRespostaIA = (conversaId: string): void => {
+  const timerAnterior = timersPorConversa.get(conversaId)
+  if (timerAnterior) {
+    clearTimeout(timerAnterior)
+  }
+
+  const timer = setTimeout(() => {
+    timersPorConversa.delete(conversaId)
+    gerarRespostaIA(conversaId).catch((e) =>
+      console.error('[ia] erro no timer agendado:', e)
+    )
+  }, DEBOUNCE_MS)
+
+  timersPorConversa.set(conversaId, timer)
+  console.log(`[ia] resposta agendada pra conversa=${conversaId} em ${DEBOUNCE_MS}ms`)
+}
 
 /**
  * Delay promise helper.

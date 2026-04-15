@@ -1,6 +1,6 @@
 import { supabase } from '../lib/supabase.js'
 import { evolution } from '../lib/evolution.js'
-import { gerarRespostaIA } from './gerar-resposta-ia.js'
+import { agendarRespostaIA } from './gerar-resposta-ia.js'
 
 const CORES_AVATAR = [
   '#3b82f6', '#10b981', '#8b5cf6', '#f59e0b',
@@ -381,14 +381,12 @@ export const processarMensagem = async (
     .eq('id', conversaId)
 
   // 4. Trigger IA — se mensagem INCOMING, modo=IA e agente vinculado
+  // Usa debounce: agrupa msgs que chegam em sequencia (cliente escrevendo varias seguidas)
   const conv = conversaExistente as typeof conversaExistente & {
     modo?: string
     agente_id?: string | null
   }
   if (!isFromMe && conv.modo === 'IA' && conv.agente_id) {
-    // Fire-and-forget — nao bloqueia o webhook
-    gerarRespostaIA(conversaId).catch((e) =>
-      console.error('[processarMensagem] erro ao gerar resposta IA:', e)
-    )
+    agendarRespostaIA(conversaId)
   }
 }
