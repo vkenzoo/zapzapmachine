@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase.js'
+import { evolution } from '../lib/evolution.js'
 
 const CORES_AVATAR = [
   '#3b82f6', '#10b981', '#8b5cf6', '#f59e0b',
@@ -26,6 +27,7 @@ const formatarTelefone = (cru: string): string => {
 
 interface ProcessarMensagemInput {
   instanciaWhatsappId: string // UUID da nossa tabela `instancias_whatsapp`
+  instanceName: string // nome da instancia no Evolution (mesmo UUID)
   userId: string
   evento: 'messages.upsert' | 'messages.update' | string
   dados: {
@@ -56,7 +58,7 @@ interface ProcessarMensagemInput {
 export const processarMensagem = async (
   input: ProcessarMensagemInput
 ): Promise<void> => {
-  const { instanciaWhatsappId, userId, dados } = input
+  const { instanciaWhatsappId, instanceName, userId, dados } = input
 
   // Ignorar mensagens sem conteudo textual por enquanto (audio/imagem/etc)
   const conteudo =
@@ -90,6 +92,10 @@ export const processarMensagem = async (
     conversaId = conversaExistente.id
   } else {
     const avatarCor = CORES_AVATAR[Math.floor(Math.random() * CORES_AVATAR.length)]
+
+    // Busca foto de perfil publica do contato no Evolution (best-effort)
+    const fotoUrl = await evolution.fotoPerfil(instanceName, telefoneCru)
+
     const { data: novaConversa, error } = await supabase
       .from('conversas')
       .insert({
@@ -100,6 +106,7 @@ export const processarMensagem = async (
         status: 'EM_ATENDIMENTO',
         modo: 'IA',
         avatar_cor: avatarCor,
+        foto_url: fotoUrl,
         ultima_mensagem: conteudo,
         ultima_mensagem_em: new Date().toISOString(),
         nao_lidas: isFromMe ? 0 : 1,

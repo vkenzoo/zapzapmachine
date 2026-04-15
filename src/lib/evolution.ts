@@ -94,6 +94,26 @@ export const evolution = {
       }),
     })
   },
+
+  /**
+   * Busca a URL da foto de perfil publica do contato.
+   * Retorna `{ wuid, profilePictureUrl }` quando o contato tem foto publica,
+   * ou `{ wuid }` (sem picture) caso nao tenha ou nao seja visivel.
+   */
+  fotoPerfil: async (
+    instanceName: string,
+    telefone: string
+  ): Promise<string | null> => {
+    try {
+      const resp = (await evoFetch(`/chat/fetchProfilePictureUrl/${instanceName}`, {
+        method: 'POST',
+        body: JSON.stringify({ number: telefone }),
+      })) as { profilePictureUrl?: string }
+      return resp.profilePictureUrl ?? null
+    } catch {
+      return null
+    }
+  },
 }
 
 /**

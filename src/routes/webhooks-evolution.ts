@@ -72,6 +72,7 @@ webhooksEvolutionRoutes.post('/evolution', async (c) => {
 
           await processarMensagem({
             instanciaWhatsappId: instanceId,
+            instanceName: instanceId, // Evolution instanceName === nosso UUID
             userId: instancia.user_id,
             evento: event,
             dados: msg,
