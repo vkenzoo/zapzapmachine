@@ -343,6 +343,7 @@ export const processarMensagem = async (
       tipo: isFromMe ? 'OUTGOING_HUMANO' : 'INCOMING',
       conteudo,
       tipo_midia: tipoMidia,
+      midia_url: midiaUrl,
       status: 'ENVIADA',
     })
 
