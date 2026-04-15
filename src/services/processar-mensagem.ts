@@ -226,14 +226,21 @@ export const processarMensagem = async (
   const tiposComMidia = new Set<TipoMidia>(['IMAGEM', 'AUDIO', 'VIDEO', 'DOCUMENTO'])
 
   if (tiposComMidia.has(tipoMidia)) {
+    console.log(`[midia] tipo=${tipoMidia} id=${dados.key.id} — baixando...`)
+
     const baixada = await evolution.baixarMidia(instanceName, {
       key: dados.key,
       message: dados.message,
       messageTimestamp: dados.messageTimestamp,
     })
 
-    if (baixada) {
-      // Usa ID da mensagem do WhatsApp como parte do path (unico, idempotente)
+    if (!baixada) {
+      console.warn(`[midia] baixarMidia retornou null (id=${dados.key.id})`)
+    } else {
+      console.log(
+        `[midia] base64 size=${baixada.base64.length} mime=${baixada.mimetype}`
+      )
+
       midiaUrl = await uploadMidiaStorage(
         baixada.base64,
         baixada.mimetype,
@@ -241,6 +248,12 @@ export const processarMensagem = async (
         dados.key.remoteJid.replace(/[^\w]/g, '_'),
         dados.key.id
       )
+
+      if (!midiaUrl) {
+        console.warn(`[midia] upload falhou (id=${dados.key.id})`)
+      } else {
+        console.log(`[midia] ✅ salva em ${midiaUrl}`)
+      }
     }
   }
 
