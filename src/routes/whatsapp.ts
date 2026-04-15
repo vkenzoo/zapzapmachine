@@ -206,8 +206,14 @@ whatsappRoutes.post('/conversas/:conversaId/enviar', async (c) => {
   const telefoneCru = conversa.telefone.replace(/\D/g, '')
 
   // 2. Envia via Evolution
+  let whatsappId: string | null = null
   try {
-    await evolution.enviarTexto(instanceName, telefoneCru, parsed.data.texto)
+    const resp = (await evolution.enviarTexto(
+      instanceName,
+      telefoneCru,
+      parsed.data.texto
+    )) as { key?: { id?: string } }
+    whatsappId = resp?.key?.id ?? null
   } catch (e) {
     console.error('[enviar] erro Evolution:', e)
     return c.json({ error: 'Erro ao enviar mensagem no WhatsApp' }, 502)
@@ -221,6 +227,7 @@ whatsappRoutes.post('/conversas/:conversaId/enviar', async (c) => {
       user_id: userId,
       tipo: 'OUTGOING_HUMANO',
       conteudo: parsed.data.texto,
+      whatsapp_message_id: whatsappId,
       status: 'ENVIADA',
     })
     .select()
@@ -325,37 +332,32 @@ whatsappRoutes.post('/conversas/:conversaId/enviar-midia', async (c) => {
   const midiaUrl = publicData.publicUrl
 
   // 3. Envia via Evolution (usa URL publica — mais leve que base64)
+  let whatsappId: string | null = null
   try {
+    let resp: { key?: { id?: string } } = {}
     if (tipoMidia === 'AUDIO') {
-      await evolution.enviarAudio(instanceName, telefoneCru, midiaUrl)
-    } else if (tipoMidia === 'IMAGEM') {
-      await evolution.enviarMidia(instanceName, {
-        telefone: telefoneCru,
-        mediatype: 'image',
-        media: midiaUrl,
-        mimetype,
-        caption: legenda,
-        fileName: fileName ?? `image.${ext}`,
-      })
-    } else if (tipoMidia === 'VIDEO') {
-      await evolution.enviarMidia(instanceName, {
-        telefone: telefoneCru,
-        mediatype: 'video',
-        media: midiaUrl,
-        mimetype,
-        caption: legenda,
-        fileName: fileName ?? `video.${ext}`,
-      })
+      resp = (await evolution.enviarAudio(
+        instanceName,
+        telefoneCru,
+        midiaUrl
+      )) as { key?: { id?: string } }
     } else {
-      await evolution.enviarMidia(instanceName, {
+      const mediatype: 'image' | 'video' | 'document' =
+        tipoMidia === 'IMAGEM'
+          ? 'image'
+          : tipoMidia === 'VIDEO'
+            ? 'video'
+            : 'document'
+      resp = (await evolution.enviarMidia(instanceName, {
         telefone: telefoneCru,
-        mediatype: 'document',
+        mediatype,
         media: midiaUrl,
         mimetype,
         caption: legenda,
-        fileName: fileName ?? `document.${ext}`,
-      })
+        fileName: fileName ?? `${mediatype}.${ext}`,
+      })) as { key?: { id?: string } }
     }
+    whatsappId = resp?.key?.id ?? null
   } catch (e) {
     console.error('[enviar-midia] Evolution falhou:', e)
     return c.json({ error: 'Falha ao enviar midia no WhatsApp' }, 502)
@@ -390,6 +392,7 @@ whatsappRoutes.post('/conversas/:conversaId/enviar-midia', async (c) => {
       conteudo: preview,
       tipo_midia: tipoMidia,
       midia_url: midiaUrl,
+      whatsapp_message_id: whatsappId,
       status: 'ENVIADA',
     })
     .select()

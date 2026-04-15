@@ -266,6 +266,19 @@ export const processarMensagem = async (
   const nomeContatoConfiavel = !isFromMe && dados.pushName ? dados.pushName : null
   const nomeContato = nomeContatoConfiavel ?? telefoneFmt
 
+  // 0. Dedup: se ja temos essa mensagem (pelo id do WhatsApp), skip
+  const { data: jaExiste } = await supabase
+    .from('mensagens')
+    .select('id')
+    .eq('whatsapp_message_id', dados.key.id)
+    .eq('user_id', userId)
+    .maybeSingle()
+
+  if (jaExiste) {
+    console.log(`[processarMensagem] duplicada (id=${dados.key.id}), skip`)
+    return
+  }
+
   // 1. Find or create conversa
   const { data: conversaExistente } = await supabase
     .from('conversas')
@@ -329,6 +342,7 @@ export const processarMensagem = async (
         conteudo,
         tipo_midia: tipoMidia,
         midia_url: midiaUrl,
+        whatsapp_message_id: dados.key.id,
         status: 'ENVIADA',
       })
     return
@@ -344,6 +358,7 @@ export const processarMensagem = async (
       conteudo,
       tipo_midia: tipoMidia,
       midia_url: midiaUrl,
+      whatsapp_message_id: dados.key.id,
       status: 'ENVIADA',
     })
 
