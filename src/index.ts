@@ -5,6 +5,7 @@ import { logger } from 'hono/logger'
 import { env } from './lib/env.js'
 import { whatsappRoutes } from './routes/whatsapp.js'
 import { webhooksEvolutionRoutes } from './routes/webhooks-evolution.js'
+import { webhooksCheckoutRoutes } from './routes/webhooks-checkout.js'
 
 const config = env()
 
@@ -37,8 +38,9 @@ app.get('/health', (c) =>
 // Rotas autenticadas
 app.route('/whatsapp', whatsappRoutes)
 
-// Webhooks publicos (sem auth)
+// Webhooks publicos (sem auth — validam por secret)
 app.route('/webhooks', webhooksEvolutionRoutes)
+app.route('/webhooks/checkout', webhooksCheckoutRoutes)
 
 // Handler de erro global
 app.onError((err, c) => {
