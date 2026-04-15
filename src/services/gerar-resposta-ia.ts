@@ -118,7 +118,7 @@ export const gerarRespostaIA = async (conversaId: string): Promise<void> => {
   // 4. Busca historico (ultimas N mensagens)
   const { data: historicoRaw } = await supabase
     .from('mensagens')
-    .select('tipo, conteudo')
+    .select('tipo, conteudo, tipo_midia, midia_url')
     .eq('conversa_id', conversaId)
     .order('enviada_em', { ascending: false })
     .limit(HISTORICO_MAX)
@@ -126,10 +126,20 @@ export const gerarRespostaIA = async (conversaId: string): Promise<void> => {
   const historico = (historicoRaw ?? []).reverse() as {
     tipo: string
     conteudo: string
+    tipo_midia: string | null
+    midia_url: string | null
   }[]
 
   const messages: LLMMessage[] = historico.map((msg) => {
     if (msg.tipo === 'INCOMING') {
+      // Se tem imagem, passa URL pra Claude/GPT ver via vision
+      if (msg.tipo_midia === 'IMAGEM' && msg.midia_url) {
+        return {
+          role: 'user',
+          content: msg.conteudo === '📷 Imagem' ? '' : msg.conteudo, // so legenda se houver
+          images: [msg.midia_url],
+        }
+      }
       return { role: 'user', content: msg.conteudo }
     }
     if (msg.tipo === 'OUTGOING_HUMANO') {
@@ -202,27 +212,43 @@ export const gerarRespostaIA = async (conversaId: string): Promise<void> => {
     : [resposta]
 
   // 9. Envia cada parte via Evolution + salva no DB
+  // Delay proporcional ao tamanho: ~35ms por caractere (velocidade humana de digitacao)
+  // min 400ms, max 6s. "Digitando..." aparece durante esse tempo.
   const instanceName = conversa.instancia_whatsapp_id
   const tel = telefoneCru(conversa.telefone)
 
+  // Telefones fake (conversa de teste) — skip Evolution, so salva no DB
+  const ehTelefoneFake = tel === '551100000000' || tel.startsWith('5511000000')
+
   for (let i = 0; i < partes.length; i++) {
     const parte = partes[i]
-    if (i > 0) {
-      // Delay entre partes pra parecer natural (800-1500ms)
-      await delay(800 + Math.random() * 700)
+
+    // Calcula tempo de digitacao proporcional
+    const tempoDigitacao = Math.min(Math.max(parte.length * 35, 400), 6000)
+
+    if (!ehTelefoneFake) {
+      await evolution.enviarPresenca(instanceName, tel, 'composing')
     }
 
+    // Espera o tempo proporcional (tambem na conversa teste, pra UX parecida)
+    await delay(tempoDigitacao)
+
     let whatsappId: string | null = null
-    try {
-      const resp = (await evolution.enviarTexto(
-        instanceName,
-        tel,
-        parte
-      )) as { key?: { id?: string } }
-      whatsappId = resp?.key?.id ?? null
-    } catch (e) {
-      console.error('[ia] erro ao enviar via Evolution:', e)
-      continue
+    if (!ehTelefoneFake) {
+      try {
+        const resp = (await evolution.enviarTexto(
+          instanceName,
+          tel,
+          parte
+        )) as { key?: { id?: string } }
+        whatsappId = resp?.key?.id ?? null
+      } catch (e) {
+        console.error('[ia] erro ao enviar via Evolution:', e)
+        continue
+      }
+    } else {
+      whatsappId = `SIM_IA_${Date.now()}_${i}`
+      console.log('[ia] conversa teste — skip Evolution')
     }
 
     await supabase.from('mensagens').insert({
@@ -234,6 +260,11 @@ export const gerarRespostaIA = async (conversaId: string): Promise<void> => {
       whatsapp_message_id: whatsappId,
       status: 'ENVIADA',
     })
+  }
+
+  // Para o "digitando..." explicitamente no fim
+  if (!ehTelefoneFake) {
+    await evolution.enviarPresenca(instanceName, tel, 'paused')
   }
 
   // 10. Atualiza conversa

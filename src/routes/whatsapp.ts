@@ -418,6 +418,77 @@ const vincularAgenteSchema = z.object({
   agenteId: z.string().uuid().nullable(),
 })
 
+const simularIncomingSchema = z.object({
+  texto: z.string().min(1).max(2000),
+})
+
+/**
+ * POST /whatsapp/conversas/:conversaId/simular-incoming
+ * Insere uma mensagem INCOMING direto no banco (sem passar pela Evolution).
+ * Se a conversa tem agente vinculado e modo=IA, dispara a resposta IA.
+ * Util pra testar prompts sem mandar no WhatsApp real.
+ */
+whatsappRoutes.post('/conversas/:conversaId/simular-incoming', async (c) => {
+  const userId = c.get('userId')
+  const conversaId = c.req.param('conversaId')
+  const body = await c.req.json().catch(() => ({}))
+  const parsed = simularIncomingSchema.safeParse(body)
+
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid body', details: parsed.error.flatten() }, 400)
+  }
+
+  const { data: conversa } = await supabase
+    .from('conversas')
+    .select('id, modo, agente_id')
+    .eq('id', conversaId)
+    .eq('user_id', userId)
+    .maybeSingle()
+
+  if (!conversa) {
+    return c.json({ error: 'Conversa nao encontrada' }, 404)
+  }
+
+  // Gera um whatsapp_message_id fake pra manter dedup consistente
+  const fakeId = `SIM_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+
+  const { data: msg, error } = await supabase
+    .from('mensagens')
+    .insert({
+      conversa_id: conversaId,
+      user_id: userId,
+      tipo: 'INCOMING',
+      conteudo: parsed.data.texto,
+      tipo_midia: 'TEXTO',
+      whatsapp_message_id: fakeId,
+      status: 'ENVIADA',
+    })
+    .select()
+    .single()
+
+  if (error) {
+    return c.json({ error: 'Erro ao salvar mensagem', details: error }, 500)
+  }
+
+  await supabase
+    .from('conversas')
+    .update({
+      ultima_mensagem: parsed.data.texto,
+      ultima_mensagem_em: new Date().toISOString(),
+    })
+    .eq('id', conversaId)
+
+  // Dispara IA se aplicavel (importacao lazy pra evitar circular dep)
+  if (conversa.modo === 'IA' && conversa.agente_id) {
+    const { agendarRespostaIA } = await import(
+      '../services/gerar-resposta-ia.js'
+    )
+    agendarRespostaIA(conversaId)
+  }
+
+  return c.json(msg)
+})
+
 /**
  * PATCH /whatsapp/conversas/:conversaId/agente
  * Vincula (ou desvincula) um agente a uma conversa.

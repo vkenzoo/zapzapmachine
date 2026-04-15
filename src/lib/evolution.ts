@@ -83,6 +83,30 @@ export const evolution = {
   },
 
   /**
+   * Envia um indicador de presenca ('composing' = digitando, 'paused' = parou, 'recording' = gravando audio).
+   * Cliente ve "digitando..." abaixo do nome no WhatsApp.
+   */
+  enviarPresenca: async (
+    instanceName: string,
+    telefone: string,
+    presenca: 'composing' | 'paused' | 'recording' | 'available'
+  ): Promise<void> => {
+    try {
+      await evoFetch(`/chat/sendPresence/${instanceName}`, {
+        method: 'POST',
+        body: JSON.stringify({
+          number: telefone,
+          presence: presenca,
+          delay: 1200,
+        }),
+      })
+    } catch (e) {
+      // Best-effort — nao trava fluxo principal
+      console.warn('[evolution] enviarPresenca falhou:', e)
+    }
+  },
+
+  /**
    * Envia uma mensagem de texto.
    */
   enviarTexto: async (instanceName: string, telefone: string, texto: string) => {

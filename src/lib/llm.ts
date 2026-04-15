@@ -5,6 +5,11 @@ import { env } from './env.js'
 export interface LLMMessage {
   role: 'user' | 'assistant'
   content: string
+  /**
+   * URLs de imagens anexadas (apenas role='user').
+   * Claude e OpenAI conseguem "ver" e comentar sobre elas.
+   */
+  images?: string[]
 }
 
 export interface LLMGenerateParams {
@@ -51,10 +56,22 @@ class ClaudeProvider implements LLMProvider {
           cache_control: { type: 'ephemeral' },
         },
       ],
-      messages: messages.map((m) => ({
-        role: m.role,
-        content: m.content,
-      })),
+      messages: messages.map((m) => {
+        // Se tem imagens, monta content como array com text + image blocks
+        if (m.role === 'user' && m.images && m.images.length > 0) {
+          return {
+            role: 'user' as const,
+            content: [
+              ...m.images.map((url) => ({
+                type: 'image' as const,
+                source: { type: 'url' as const, url },
+              })),
+              { type: 'text' as const, text: m.content || 'Imagem recebida:' },
+            ],
+          }
+        }
+        return { role: m.role, content: m.content }
+      }),
     })
 
     // Concatena blocos de texto (normalmente um so)
@@ -89,11 +106,26 @@ class OpenAIProvider implements LLMProvider {
       model: this.model,
       max_tokens: maxTokens ?? DEFAULT_MAX_TOKENS,
       messages: [
-        { role: 'system', content: systemPrompt },
-        ...messages.map((m) => ({
-          role: m.role as 'user' | 'assistant',
-          content: m.content,
-        })),
+        { role: 'system' as const, content: systemPrompt },
+        ...messages.map((m) => {
+          // Imagens via vision (GPT-4o/4o-mini suportam)
+          if (m.role === 'user' && m.images && m.images.length > 0) {
+            return {
+              role: 'user' as const,
+              content: [
+                ...m.images.map((url) => ({
+                  type: 'image_url' as const,
+                  image_url: { url },
+                })),
+                { type: 'text' as const, text: m.content || 'Imagem recebida:' },
+              ],
+            }
+          }
+          return {
+            role: m.role as 'user' | 'assistant',
+            content: m.content,
+          }
+        }),
       ],
     })
 

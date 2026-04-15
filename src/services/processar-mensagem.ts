@@ -1,5 +1,6 @@
 import { supabase } from '../lib/supabase.js'
 import { evolution } from '../lib/evolution.js'
+import { transcreverAudio } from '../lib/whisper.js'
 import { agendarRespostaIA } from './gerar-resposta-ia.js'
 
 const CORES_AVATAR = [
@@ -214,12 +215,15 @@ export const processarMensagem = async (
   const { instanciaWhatsappId, instanceName, userId, dados } = input
 
   // Extrai tipo + conteudo de qualquer tipo de mensagem (texto ou midia)
-  const { conteudo, tipoMidia } = extrairMidia(dados.message)
+  const { conteudo: conteudoPlaceholder, tipoMidia } = extrairMidia(dados.message)
 
-  if (!conteudo) {
+  if (!conteudoPlaceholder) {
     console.log('[processarMensagem] mensagem sem conteudo suportado, skip')
     return
   }
+
+  // conteudo pode ser atualizado depois se for audio transcrito
+  let conteudo = conteudoPlaceholder
 
   // Pra mensagens de midia, baixa o arquivo via Evolution e sobe no Storage.
   // Stickers sao ignorados (baixo valor, alto custo de armazenamento).
@@ -254,6 +258,19 @@ export const processarMensagem = async (
         console.warn(`[midia] upload falhou (id=${dados.key.id})`)
       } else {
         console.log(`[midia] ✅ salva em ${midiaUrl}`)
+
+        // Audio: transcreve via Whisper e usa transcricao como conteudo
+        if (tipoMidia === 'AUDIO') {
+          console.log(`[whisper] transcrevendo audio...`)
+          const texto = await transcreverAudio(midiaUrl)
+          if (texto) {
+            // Conteudo vira o texto transcrito com prefixo visual pro dashboard
+            conteudo = `🎙️ "${texto}"`
+            console.log(`[whisper] ✅ transcrito: ${texto.substring(0, 100)}`)
+          } else {
+            console.warn('[whisper] transcricao falhou, mantem placeholder')
+          }
+        }
       }
     }
   }
