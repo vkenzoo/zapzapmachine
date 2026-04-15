@@ -25,6 +25,16 @@ const formatarTelefone = (cru: string): string => {
   return `+${cru}`
 }
 
+type TipoMidia =
+  | 'TEXTO'
+  | 'IMAGEM'
+  | 'AUDIO'
+  | 'VIDEO'
+  | 'DOCUMENTO'
+  | 'STICKER'
+  | 'LOCALIZACAO'
+  | 'CONTATO'
+
 interface ProcessarMensagemInput {
   instanciaWhatsappId: string // UUID da nossa tabela `instancias_whatsapp`
   instanceName: string // nome da instancia no Evolution (mesmo UUID)
@@ -40,12 +50,92 @@ interface ProcessarMensagemInput {
     message?: {
       conversation?: string
       extendedTextMessage?: { text: string }
-      imageMessage?: { caption?: string }
-      audioMessage?: unknown
-      videoMessage?: { caption?: string }
+      imageMessage?: { caption?: string; mimetype?: string }
+      audioMessage?: { mimetype?: string; ptt?: boolean; seconds?: number }
+      videoMessage?: { caption?: string; mimetype?: string }
+      documentMessage?: { fileName?: string; mimetype?: string }
+      stickerMessage?: { mimetype?: string }
+      locationMessage?: { degreesLatitude?: number; degreesLongitude?: number }
+      contactMessage?: { displayName?: string }
     }
     messageTimestamp?: number
   }
+}
+
+/**
+ * Detecta tipo de midia e retorna um preview textual amigavel.
+ */
+const extrairMidia = (
+  message: ProcessarMensagemInput['dados']['message']
+): { conteudo: string; tipoMidia: TipoMidia } => {
+  if (!message) return { conteudo: '', tipoMidia: 'TEXTO' }
+
+  // Texto puro
+  if (message.conversation) {
+    return { conteudo: message.conversation, tipoMidia: 'TEXTO' }
+  }
+  if (message.extendedTextMessage?.text) {
+    return { conteudo: message.extendedTextMessage.text, tipoMidia: 'TEXTO' }
+  }
+
+  // Imagem
+  if (message.imageMessage) {
+    const caption = message.imageMessage.caption
+    return {
+      conteudo: caption ? `📷 ${caption}` : '📷 Imagem',
+      tipoMidia: 'IMAGEM',
+    }
+  }
+
+  // Audio
+  if (message.audioMessage) {
+    const ptt = message.audioMessage.ptt
+    const secs = message.audioMessage.seconds
+    const duracao = secs ? ` (${secs}s)` : ''
+    return {
+      conteudo: ptt ? `🎙️ Mensagem de voz${duracao}` : `🎵 Audio${duracao}`,
+      tipoMidia: 'AUDIO',
+    }
+  }
+
+  // Video
+  if (message.videoMessage) {
+    const caption = message.videoMessage.caption
+    return {
+      conteudo: caption ? `🎥 ${caption}` : '🎥 Video',
+      tipoMidia: 'VIDEO',
+    }
+  }
+
+  // Documento
+  if (message.documentMessage) {
+    const nome = message.documentMessage.fileName
+    return {
+      conteudo: nome ? `📎 ${nome}` : '📎 Documento',
+      tipoMidia: 'DOCUMENTO',
+    }
+  }
+
+  // Sticker
+  if (message.stickerMessage) {
+    return { conteudo: '😀 Figurinha', tipoMidia: 'STICKER' }
+  }
+
+  // Localizacao
+  if (message.locationMessage) {
+    return { conteudo: '📍 Localizacao', tipoMidia: 'LOCALIZACAO' }
+  }
+
+  // Contato
+  if (message.contactMessage) {
+    const nome = message.contactMessage.displayName
+    return {
+      conteudo: nome ? `👤 Contato: ${nome}` : '👤 Contato',
+      tipoMidia: 'CONTATO',
+    }
+  }
+
+  return { conteudo: '', tipoMidia: 'TEXTO' }
 }
 
 /**
@@ -60,16 +150,11 @@ export const processarMensagem = async (
 ): Promise<void> => {
   const { instanciaWhatsappId, instanceName, userId, dados } = input
 
-  // Ignorar mensagens sem conteudo textual por enquanto (audio/imagem/etc)
-  const conteudo =
-    dados.message?.conversation ||
-    dados.message?.extendedTextMessage?.text ||
-    dados.message?.imageMessage?.caption ||
-    dados.message?.videoMessage?.caption ||
-    null
+  // Extrai tipo + conteudo de qualquer tipo de mensagem (texto ou midia)
+  const { conteudo, tipoMidia } = extrairMidia(dados.message)
 
   if (!conteudo) {
-    console.log('[processarMensagem] sem conteudo textual, skip')
+    console.log('[processarMensagem] mensagem sem conteudo suportado, skip')
     return
   }
 
@@ -143,6 +228,7 @@ export const processarMensagem = async (
         user_id: userId,
         tipo: isFromMe ? 'OUTGOING_HUMANO' : 'INCOMING',
         conteudo,
+        tipo_midia: tipoMidia,
         status: 'ENVIADA',
       })
     return
@@ -156,6 +242,7 @@ export const processarMensagem = async (
       user_id: userId,
       tipo: isFromMe ? 'OUTGOING_HUMANO' : 'INCOMING',
       conteudo,
+      tipo_midia: tipoMidia,
       status: 'ENVIADA',
     })
 
