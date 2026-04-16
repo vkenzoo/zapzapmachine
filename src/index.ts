@@ -6,6 +6,7 @@ import { env } from './lib/env.js'
 import { whatsappRoutes } from './routes/whatsapp.js'
 import { webhooksEvolutionRoutes } from './routes/webhooks-evolution.js'
 import { webhooksCheckoutRoutes } from './routes/webhooks-checkout.js'
+import { iniciarWorkerAutomacoes } from './services/worker-automacoes.js'
 
 const config = env()
 
@@ -58,5 +59,7 @@ serve(
     console.log(`✅ RoboVendas Backend rodando em http://localhost:${info.port}`)
     console.log(`   NODE_ENV=${config.NODE_ENV}`)
     console.log(`   Webhook publico: ${config.BACKEND_PUBLIC_URL}/webhooks/evolution`)
+    // Inicia worker de automacoes agendadas
+    iniciarWorkerAutomacoes()
   }
 )

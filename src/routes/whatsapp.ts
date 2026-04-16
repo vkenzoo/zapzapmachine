@@ -692,3 +692,120 @@ whatsappRoutes.post('/toggle-agentes', async (c) => {
     return c.json({ ok: true, desligados: false })
   }
 })
+
+// ============================================================
+// AUTOMAÇÕES
+// ============================================================
+
+const automacaoSchema = z.object({
+  nome: z.string().min(2).max(120),
+  evento: z.enum([
+    'COMPRA_APROVADA',
+    'COMPRA_RECUSADA',
+    'REEMBOLSO',
+    'ASSINATURA_CANCELADA',
+    'CARRINHO_ABANDONADO',
+  ]),
+  provedor: z.enum(['HOTMART', 'KIWIFY', 'TICTO']).nullable().optional(),
+  produtoId: z.string().uuid().nullable().optional(),
+  agenteId: z.string().uuid().nullable().optional(),
+  mensagemInicial: z.string().nullable().optional(),
+  delayMinutos: z.number().int().min(0).max(43200).default(0), // max 30 dias
+  executarSeExiste: z.boolean().default(false),
+  ativo: z.boolean().default(true),
+})
+
+/** Lista automacoes do usuario */
+whatsappRoutes.get('/automacoes', async (c) => {
+  const userId = c.get('userId')
+  const { data, error } = await supabase
+    .from('automacoes')
+    .select('*')
+    .eq('user_id', userId)
+    .order('criado_em', { ascending: false })
+
+  if (error) return c.json({ error: error.message }, 500)
+  return c.json(data ?? [])
+})
+
+/** Cria nova automacao */
+whatsappRoutes.post('/automacoes', async (c) => {
+  const userId = c.get('userId')
+  const body = await c.req.json().catch(() => ({}))
+  const parsed = automacaoSchema.safeParse(body)
+
+  if (!parsed.success) {
+    return c.json({ error: 'Dados invalidos', details: parsed.error.flatten() }, 400)
+  }
+
+  const d = parsed.data
+  const { data, error } = await supabase
+    .from('automacoes')
+    .insert({
+      user_id: userId,
+      nome: d.nome,
+      evento: d.evento,
+      provedor: d.provedor ?? null,
+      produto_id: d.produtoId ?? null,
+      agente_id: d.agenteId ?? null,
+      mensagem_inicial: d.mensagemInicial ?? null,
+      delay_minutos: d.delayMinutos,
+      executar_se_existe: d.executarSeExiste,
+      ativo: d.ativo,
+    })
+    .select('*')
+    .single()
+
+  if (error) return c.json({ error: error.message }, 500)
+  return c.json(data)
+})
+
+/** Atualiza automacao */
+whatsappRoutes.patch('/automacoes/:id', async (c) => {
+  const userId = c.get('userId')
+  const id = c.req.param('id')
+  const body = await c.req.json().catch(() => ({}))
+  const parsed = automacaoSchema.partial().safeParse(body)
+
+  if (!parsed.success) {
+    return c.json({ error: 'Dados invalidos', details: parsed.error.flatten() }, 400)
+  }
+
+  const d = parsed.data
+  const update: Record<string, unknown> = { atualizado_em: new Date().toISOString() }
+  if (d.nome !== undefined) update.nome = d.nome
+  if (d.evento !== undefined) update.evento = d.evento
+  if (d.provedor !== undefined) update.provedor = d.provedor
+  if (d.produtoId !== undefined) update.produto_id = d.produtoId
+  if (d.agenteId !== undefined) update.agente_id = d.agenteId
+  if (d.mensagemInicial !== undefined) update.mensagem_inicial = d.mensagemInicial
+  if (d.delayMinutos !== undefined) update.delay_minutos = d.delayMinutos
+  if (d.executarSeExiste !== undefined) update.executar_se_existe = d.executarSeExiste
+  if (d.ativo !== undefined) update.ativo = d.ativo
+
+  const { data, error } = await supabase
+    .from('automacoes')
+    .update(update)
+    .eq('id', id)
+    .eq('user_id', userId)
+    .select('*')
+    .single()
+
+  if (error) return c.json({ error: error.message }, 500)
+  return c.json(data)
+})
+
+/** Deleta automacao */
+whatsappRoutes.delete('/automacoes/:id', async (c) => {
+  const userId = c.get('userId')
+  const id = c.req.param('id')
+
+  const { error } = await supabase
+    .from('automacoes')
+    .delete()
+    .eq('id', id)
+    .eq('user_id', userId)
+
+  if (error) return c.json({ error: error.message }, 500)
+  return c.json({ ok: true })
+})

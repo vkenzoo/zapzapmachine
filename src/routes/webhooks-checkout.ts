@@ -1,13 +1,11 @@
 import { Hono } from 'hono'
 import { supabase } from '../lib/supabase.js'
-import { processarCompra } from '../services/processar-compra.js'
+import { dispararAutomacoes, type EventoAutomacao } from '../services/executar-automacao.js'
 
 export const webhooksCheckoutRoutes = new Hono()
 
 /**
  * Valida o webhook_secret e retorna a integracao correspondente.
- * Cada integracao tem um secret unico — usuario cola ele no painel do provedor
- * como parte da URL: /webhooks/checkout/hotmart?secret=XXX
  */
 const validarSecret = async (
   provedor: string,
@@ -25,9 +23,7 @@ const validarSecret = async (
 }
 
 // =============================================================================
-// HOTMART — https://developers.hotmart.com/docs/pt-BR/webhooks/listening-webhook/
-// Payload: { event, data: { buyer: { name, email, document, checkout_phone }, product: { id, name }, purchase: { status } } }
-// Status relevante: PURCHASE_APPROVED | PURCHASE_COMPLETE
+// HOTMART
 // =============================================================================
 
 webhooksCheckoutRoutes.post('/hotmart', async (c) => {
@@ -38,12 +34,7 @@ webhooksCheckoutRoutes.post('/hotmart', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as {
     event?: string
     data?: {
-      buyer?: {
-        name?: string
-        email?: string
-        checkout_phone?: string
-        document?: string
-      }
+      buyer?: { name?: string; email?: string; checkout_phone?: string }
       product?: { id?: string | number; name?: string }
       purchase?: { status?: string }
     }
@@ -51,49 +42,51 @@ webhooksCheckoutRoutes.post('/hotmart', async (c) => {
 
   const evento = body.event ?? ''
   const status = body.data?.purchase?.status ?? ''
-
   console.log(`[hotmart] evento=${evento} status=${status}`)
 
-  // Processa apenas compras aprovadas / completadas
+  // Mapear evento Hotmart → nosso evento interno
+  let eventoInterno: EventoAutomacao | null = null
   if (
-    !['PURCHASE_APPROVED', 'PURCHASE_COMPLETE'].includes(evento) &&
-    !['APPROVED', 'COMPLETE'].includes(status)
+    ['PURCHASE_APPROVED', 'PURCHASE_COMPLETE'].includes(evento) ||
+    ['APPROVED', 'COMPLETE'].includes(status)
   ) {
-    return c.json({ ok: true, ignored: true, reason: 'evento nao aprovacao' })
+    eventoInterno = 'COMPRA_APROVADA'
+  } else if (evento === 'PURCHASE_REFUNDED' || status === 'REFUNDED') {
+    eventoInterno = 'REEMBOLSO'
+  } else if (evento === 'PURCHASE_CANCELED' || status === 'CANCELED') {
+    eventoInterno = 'COMPRA_RECUSADA'
+  } else if (evento === 'SUBSCRIPTION_CANCELLATION') {
+    eventoInterno = 'ASSINATURA_CANCELADA'
+  } else if (evento === 'PURCHASE_OUT_OF_SHOPPING_CART') {
+    eventoInterno = 'CARRINHO_ABANDONADO'
+  }
+
+  if (!eventoInterno) {
+    return c.json({ ok: true, ignored: true, reason: `evento ${evento} nao mapeado` })
   }
 
   const buyer = body.data?.buyer
   const product = body.data?.product
 
   if (!buyer?.checkout_phone || !product?.id) {
-    return c.json(
-      { error: 'Payload incompleto (falta checkout_phone ou product.id)' },
-      400
-    )
+    return c.json({ error: 'Payload incompleto' }, 400)
   }
 
-  const resultado = await processarCompra({
+  const resultado = await dispararAutomacoes(eventoInterno, {
     integracaoId: integracao.id,
     provedor: 'HOTMART',
-    dados: {
-      nome: buyer.name ?? 'Cliente',
-      email: buyer.email,
-      telefone: buyer.checkout_phone,
-      idExternoProduto: String(product.id),
-      nomeProduto: product.name,
-    },
+    nome: buyer.name ?? 'Cliente',
+    email: buyer.email,
+    telefone: buyer.checkout_phone,
+    idExternoProduto: String(product.id),
+    nomeProduto: product.name,
   })
 
-  if (!resultado.ok) {
-    console.error('[hotmart] falha:', resultado.motivo)
-    return c.json({ error: resultado.motivo }, 500)
-  }
-  return c.json({ ok: true, conversaId: resultado.conversaId })
+  return c.json(resultado)
 })
 
 // =============================================================================
-// KIWIFY — https://docs.kiwify.com.br/api-reference/webhooks
-// Payload: { order_id, order_status, Customer: { first_name, last_name, email, mobile }, Product: { product_id, product_name } }
+// KIWIFY
 // =============================================================================
 
 webhooksCheckoutRoutes.post('/kiwify', async (c) => {
@@ -110,28 +103,33 @@ webhooksCheckoutRoutes.post('/kiwify', async (c) => {
       full_name?: string
       email?: string
       mobile?: string
-      CPF?: string
     }
     Product?: { product_id?: string; product_name?: string }
   }
 
-  const status = body.order_status ?? body.webhook_event_type ?? ''
+  const status = (body.order_status ?? body.webhook_event_type ?? '').toLowerCase()
   console.log(`[kiwify] status=${status}`)
 
-  // Processa apenas "paid" / "approved"
-  const statusAprovado = ['paid', 'approved', 'compra_aprovada', 'order_approved']
-  if (!statusAprovado.includes(status.toLowerCase())) {
-    return c.json({ ok: true, ignored: true, reason: 'nao aprovado' })
+  let eventoInterno: EventoAutomacao | null = null
+  if (['paid', 'approved', 'compra_aprovada', 'order_approved'].includes(status)) {
+    eventoInterno = 'COMPRA_APROVADA'
+  } else if (['refunded', 'reembolsado'].includes(status)) {
+    eventoInterno = 'REEMBOLSO'
+  } else if (['canceled', 'cancelled', 'refused'].includes(status)) {
+    eventoInterno = 'COMPRA_RECUSADA'
+  } else if (status.includes('abandoned') || status.includes('abandonado')) {
+    eventoInterno = 'CARRINHO_ABANDONADO'
+  }
+
+  if (!eventoInterno) {
+    return c.json({ ok: true, ignored: true, reason: `status ${status} nao mapeado` })
   }
 
   const customer = body.Customer
   const product = body.Product
 
   if (!customer?.mobile || !product?.product_id) {
-    return c.json(
-      { error: 'Payload incompleto (mobile ou product_id)' },
-      400
-    )
+    return c.json({ error: 'Payload incompleto' }, 400)
   }
 
   const nome =
@@ -139,28 +137,21 @@ webhooksCheckoutRoutes.post('/kiwify', async (c) => {
     `${customer.first_name ?? ''} ${customer.last_name ?? ''}`.trim() ??
     'Cliente'
 
-  const resultado = await processarCompra({
+  const resultado = await dispararAutomacoes(eventoInterno, {
     integracaoId: integracao.id,
     provedor: 'KIWIFY',
-    dados: {
-      nome,
-      email: customer.email,
-      telefone: customer.mobile,
-      idExternoProduto: product.product_id,
-      nomeProduto: product.product_name,
-    },
+    nome,
+    email: customer.email,
+    telefone: customer.mobile,
+    idExternoProduto: product.product_id,
+    nomeProduto: product.product_name,
   })
 
-  if (!resultado.ok) {
-    console.error('[kiwify] falha:', resultado.motivo)
-    return c.json({ error: resultado.motivo }, 500)
-  }
-  return c.json({ ok: true, conversaId: resultado.conversaId })
+  return c.json(resultado)
 })
 
 // =============================================================================
-// TICTO — payload similar, campos podem variar
-// Documentacao: https://tictotalk.com.br/webhooks (simplificado)
+// TICTO
 // =============================================================================
 
 webhooksCheckoutRoutes.post('/ticto', async (c) => {
@@ -171,61 +162,60 @@ webhooksCheckoutRoutes.post('/ticto', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as {
     status?: string
     event?: string
-    customer?: {
-      name?: string
-      email?: string
-      phone?: string
-    }
-    product?: {
-      id?: string | number
-      name?: string
-    }
+    customer?: { name?: string; email?: string; phone?: string }
+    product?: { id?: string | number; name?: string }
   }
 
-  const status = body.status ?? body.event ?? ''
+  const status = (body.status ?? body.event ?? '').toLowerCase()
   console.log(`[ticto] status=${status}`)
 
-  const statusAprovado = ['approved', 'paid', 'authorized', 'compra_aprovada']
-  if (!statusAprovado.includes(status.toLowerCase())) {
-    return c.json({ ok: true, ignored: true, reason: 'nao aprovado' })
+  let eventoInterno: EventoAutomacao | null = null
+  if (['approved', 'paid', 'authorized', 'compra_aprovada'].includes(status)) {
+    eventoInterno = 'COMPRA_APROVADA'
+  } else if (['refunded', 'reembolsado'].includes(status)) {
+    eventoInterno = 'REEMBOLSO'
+  } else if (['canceled', 'cancelled', 'refused'].includes(status)) {
+    eventoInterno = 'COMPRA_RECUSADA'
+  } else if (status.includes('abandoned') || status.includes('abandonado')) {
+    eventoInterno = 'CARRINHO_ABANDONADO'
+  }
+
+  if (!eventoInterno) {
+    return c.json({ ok: true, ignored: true, reason: `status ${status} nao mapeado` })
   }
 
   const customer = body.customer
   const product = body.product
 
   if (!customer?.phone || !product?.id) {
-    return c.json({ error: 'Payload incompleto (phone ou product.id)' }, 400)
+    return c.json({ error: 'Payload incompleto' }, 400)
   }
 
-  const resultado = await processarCompra({
+  const resultado = await dispararAutomacoes(eventoInterno, {
     integracaoId: integracao.id,
     provedor: 'TICTO',
-    dados: {
-      nome: customer.name ?? 'Cliente',
-      email: customer.email,
-      telefone: customer.phone,
-      idExternoProduto: String(product.id),
-      nomeProduto: product.name,
-    },
+    nome: customer.name ?? 'Cliente',
+    email: customer.email,
+    telefone: customer.phone,
+    idExternoProduto: String(product.id),
+    nomeProduto: product.name,
   })
 
-  if (!resultado.ok) {
-    console.error('[ticto] falha:', resultado.motivo)
-    return c.json({ error: resultado.motivo }, 500)
-  }
-  return c.json({ ok: true, conversaId: resultado.conversaId })
+  return c.json(resultado)
 })
 
 // =============================================================================
-// Rota de teste — simula compra sem precisar do provedor real
-// POST /webhooks/checkout/simular?secret=XXX
-// Body: { nome, email, telefone, idExternoProduto, nomeProduto, provedor }
+// SIMULAR (teste sem provedor real)
 // =============================================================================
 
 webhooksCheckoutRoutes.post('/simular', async (c) => {
   const secret = c.req.query('secret')
-  const provedor = c.req.query('provedor') ?? 'HOTMART'
-  const integracao = await validarSecret(provedor.toUpperCase(), secret)
+  const provedor = (c.req.query('provedor') ?? 'HOTMART').toUpperCase() as
+    | 'HOTMART'
+    | 'KIWIFY'
+    | 'TICTO'
+  const evento = (c.req.query('evento') ?? 'COMPRA_APROVADA') as EventoAutomacao
+  const integracao = await validarSecret(provedor, secret)
   if (!integracao) return c.json({ error: 'Invalid or missing secret' }, 401)
 
   const body = (await c.req.json().catch(() => ({}))) as {
@@ -240,18 +230,15 @@ webhooksCheckoutRoutes.post('/simular', async (c) => {
     return c.json({ error: 'telefone e idExternoProduto sao obrigatorios' }, 400)
   }
 
-  const resultado = await processarCompra({
+  const resultado = await dispararAutomacoes(evento, {
     integracaoId: integracao.id,
-    provedor: 'SIMULAR',
-    dados: {
-      nome: body.nome ?? 'Cliente Teste',
-      email: body.email,
-      telefone: body.telefone,
-      idExternoProduto: body.idExternoProduto,
-      nomeProduto: body.nomeProduto ?? 'Produto Teste',
-    },
+    provedor,
+    nome: body.nome ?? 'Cliente Teste',
+    email: body.email,
+    telefone: body.telefone,
+    idExternoProduto: body.idExternoProduto,
+    nomeProduto: body.nomeProduto ?? 'Produto Teste',
   })
 
-  if (!resultado.ok) return c.json({ error: resultado.motivo }, 500)
-  return c.json({ ok: true, conversaId: resultado.conversaId })
+  return c.json(resultado)
 })
