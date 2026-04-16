@@ -3,11 +3,27 @@ import { evolution } from '../lib/evolution.js'
 import { logEvento } from './log-evento.js'
 
 export type EventoAutomacao =
+  // Compra
   | 'COMPRA_APROVADA'
   | 'COMPRA_RECUSADA'
   | 'REEMBOLSO'
-  | 'ASSINATURA_CANCELADA'
   | 'CARRINHO_ABANDONADO'
+  | 'ASSINATURA_CANCELADA'
+  // Pagamento pendente
+  | 'BOLETO_GERADO'
+  | 'PIX_GERADO'
+  | 'PIX_EXPIRADO'
+  | 'BOLETO_ATRASADO'
+  | 'PAGAMENTO_EXPIRADO'
+  // Problemas
+  | 'CHARGEBACK'
+  | 'PROTESTO'
+  | 'PAGAMENTO_ATRASADO'
+  // Assinaturas
+  | 'ASSINATURA_ATRASADA'
+  | 'ASSINATURA_RENOVADA'
+  | 'TRIAL_INICIADO'
+  | 'TRIAL_ENCERRADO'
 
 export interface DadosEvento {
   nome: string
@@ -19,6 +35,18 @@ export interface DadosEvento {
   provedor: 'HOTMART' | 'KIWIFY' | 'TICTO'
   /** ID da integracao pra saber qual user */
   integracaoId: string
+  /** Valor total da compra em BRL (unidade: R$, ex: 997.00) */
+  valor?: number
+  /** Método de pagamento NORMALIZADO: 'Cartão de crédito' | 'Pix' | 'Boleto' | 'Débito' | string raw */
+  metodoPagamento?: string
+  /** Número de parcelas (1 = à vista) */
+  parcelas?: number
+  /** Link de acesso ao produto (área de membros, etc) */
+  linkAcesso?: string
+  /** URL do boleto (quando evento envolve boleto) */
+  boletoUrl?: string
+  /** Código pix copia-e-cola (quando evento envolve pix) */
+  pixCodigo?: string
 }
 
 /** Linha da tabela automacoes (camelCase via mapper interno) */
@@ -51,15 +79,62 @@ const normalizarTelefone = (raw: string): { fmt: string; cru: string } | null =>
   return { fmt: `+55 ${ddd} ${numero}`, cru: digits }
 }
 
-/** Aplica placeholders {nome}, {produto}, {email} */
+/** Formata valor em BRL. Ex: 997 → "R$ 997,00", 1234.56 → "R$ 1.234,56" */
+const formatarValor = (valor?: number): string => {
+  if (valor == null || isNaN(valor)) return '—'
+  return new Intl.NumberFormat('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+  }).format(valor)
+}
+
+/** Normaliza método de pagamento pra texto bonito */
+const normalizarMetodoPagamento = (raw?: string): string => {
+  if (!raw) return '—'
+  const low = raw.toLowerCase().trim()
+  if (low.includes('credit') || low === 'cartao' || low === 'cartão' || low === 'card')
+    return 'Cartão de crédito'
+  if (low.includes('debit')) return 'Cartão de débito'
+  if (low === 'pix') return 'Pix'
+  if (low === 'boleto' || low === 'billet' || low === 'bank_slip') return 'Boleto'
+  return raw
+}
+
+/** Formata parcelas. 1 → "à vista", 12 → "12x" */
+const formatarParcelas = (p?: number): string => {
+  if (p == null || isNaN(p) || p <= 1) return 'à vista'
+  return `${p}x`
+}
+
+/**
+ * Aplica placeholders da mensagem de template.
+ * Suporta: {nome} {produto} {email} {valor} {metodo_pagamento} {parcelas}
+ *          {link_acesso} {boleto_url} {pix_codigo}
+ */
 const aplicarTemplate = (
   template: string,
-  vars: { nome?: string; produto?: string; email?: string }
+  vars: {
+    nome?: string
+    produto?: string
+    email?: string
+    valor?: number
+    metodoPagamento?: string
+    parcelas?: number
+    linkAcesso?: string
+    boletoUrl?: string
+    pixCodigo?: string
+  }
 ): string => {
   return template
     .replace(/\{nome\}/gi, vars.nome ?? 'cliente')
     .replace(/\{produto\}/gi, vars.produto ?? 'sua compra')
     .replace(/\{email\}/gi, vars.email ?? '')
+    .replace(/\{valor\}/gi, formatarValor(vars.valor))
+    .replace(/\{metodo_pagamento\}/gi, normalizarMetodoPagamento(vars.metodoPagamento))
+    .replace(/\{parcelas\}/gi, formatarParcelas(vars.parcelas))
+    .replace(/\{link_acesso\}/gi, vars.linkAcesso ?? '')
+    .replace(/\{boleto_url\}/gi, vars.boletoUrl ?? '')
+    .replace(/\{pix_codigo\}/gi, vars.pixCodigo ?? '')
     .trim()
 }
 
@@ -270,6 +345,12 @@ export const executarAutomacao = async (
       nome: dados.nome,
       produto: dados.nomeProduto,
       email: dados.email,
+      valor: dados.valor,
+      metodoPagamento: dados.metodoPagamento,
+      parcelas: dados.parcelas,
+      linkAcesso: dados.linkAcesso,
+      boletoUrl: dados.boletoUrl,
+      pixCodigo: dados.pixCodigo,
     })
 
     try {
