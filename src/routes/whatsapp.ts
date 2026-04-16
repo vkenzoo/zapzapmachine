@@ -576,3 +576,119 @@ whatsappRoutes.delete('/:id', async (c) => {
   await supabase.from('instancias_whatsapp').delete().eq('id', id)
   return c.json({ ok: true })
 })
+
+// ============================================================
+// PERFIL
+// ============================================================
+
+/**
+ * PATCH /whatsapp/perfil
+ * Atualiza nome e/ou foto do usuario.
+ */
+whatsappRoutes.patch('/perfil', async (c) => {
+  const userId = c.get('userId')
+  const body = await c.req.json().catch(() => ({}))
+
+  const update: Record<string, unknown> = {}
+  if (typeof body.nome === 'string' && body.nome.trim()) {
+    update.nome = body.nome.trim()
+  }
+  if (typeof body.foto_url === 'string') {
+    update.foto_url = body.foto_url || null
+  }
+
+  if (Object.keys(update).length === 0) {
+    return c.json({ error: 'Nada pra atualizar' }, 400)
+  }
+
+  const { error } = await supabase
+    .from('usuarios')
+    .update(update)
+    .eq('id', userId)
+
+  if (error) {
+    return c.json({ error: error.message }, 500)
+  }
+
+  return c.json({ ok: true, ...update })
+})
+
+/**
+ * POST /whatsapp/perfil/upload-foto
+ * Recebe base64 da foto, sobe no Storage, retorna URL publica.
+ */
+whatsappRoutes.post('/perfil/upload-foto', async (c) => {
+  const userId = c.get('userId')
+  const body = await c.req.json().catch(() => ({}))
+  const { base64, mimetype } = body as { base64?: string; mimetype?: string }
+
+  if (!base64 || !mimetype) {
+    return c.json({ error: 'base64 e mimetype obrigatorios' }, 400)
+  }
+
+  const ext = mimetype.split('/')[1]?.split(';')[0] ?? 'jpg'
+  const path = `${userId}/avatar.${ext}`
+  const buffer = Buffer.from(base64, 'base64')
+
+  const { error: upErr } = await supabase.storage
+    .from('avatars')
+    .upload(path, buffer, { contentType: mimetype, upsert: true })
+
+  if (upErr) {
+    return c.json({ error: upErr.message }, 500)
+  }
+
+  const { data } = supabase.storage.from('avatars').getPublicUrl(path)
+  const fotoUrl = `${data.publicUrl}?t=${Date.now()}`
+
+  // Salva na tabela usuarios
+  await supabase.from('usuarios').update({ foto_url: fotoUrl }).eq('id', userId)
+
+  return c.json({ fotoUrl })
+})
+
+// ============================================================
+// TOGGLE AGENTES (GLOBAL)
+// ============================================================
+
+/**
+ * POST /whatsapp/toggle-agentes
+ * Desliga ou religa todos os agentes IA nas conversas do usuario.
+ */
+whatsappRoutes.post('/toggle-agentes', async (c) => {
+  const userId = c.get('userId')
+  const body = await c.req.json().catch(() => ({}))
+  const desligar = body.desligar === true
+
+  if (desligar) {
+    // 1. Salva modo atual das conversas em modo_anterior (só as que estão em IA)
+    await supabase
+      .from('conversas')
+      .update({ modo_anterior: 'IA', modo: 'HUMANO' })
+      .eq('user_id', userId)
+      .eq('modo', 'IA')
+
+    // 2. Marca flag global
+    await supabase
+      .from('usuarios')
+      .update({ agentes_desligados: true })
+      .eq('id', userId)
+
+    return c.json({ ok: true, desligados: true })
+  } else {
+    // 1. Restaura conversas que tinham modo_anterior = IA
+    await supabase
+      .from('conversas')
+      .update({ modo: 'IA', modo_anterior: null })
+      .eq('user_id', userId)
+      .eq('modo_anterior', 'IA')
+
+    // 2. Desliga flag global
+    await supabase
+      .from('usuarios')
+      .update({ agentes_desligados: false })
+      .eq('id', userId)
+
+    return c.json({ ok: true, desligados: false })
+  }
+})

@@ -327,15 +327,24 @@ export const processarMensagem = async (
     const fotoUrl = await evolution.fotoPerfil(instanceName, telefoneCru)
 
     // Busca agente padrao ativo do usuario pra vincular automaticamente
+    // Mas respeita flag global "agentes_desligados"
     let agentePadraoId: string | null = null
     if (!isFromMe) {
-      const { data: agentesAtivos } = await supabase
-        .from('agentes')
-        .select('id')
-        .eq('user_id', userId)
-        .eq('status', 'ATIVO')
-        .limit(1)
-      agentePadraoId = agentesAtivos?.[0]?.id ?? null
+      const { data: userRow } = await supabase
+        .from('usuarios')
+        .select('agentes_desligados')
+        .eq('id', userId)
+        .maybeSingle()
+
+      if (!userRow?.agentes_desligados) {
+        const { data: agentesAtivos } = await supabase
+          .from('agentes')
+          .select('id')
+          .eq('user_id', userId)
+          .eq('status', 'ATIVO')
+          .limit(1)
+        agentePadraoId = agentesAtivos?.[0]?.id ?? null
+      }
     }
 
     const { data: novaConversa, error } = await supabase
