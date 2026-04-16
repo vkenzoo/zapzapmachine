@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { supabase } from '../lib/supabase.js'
 import { mapearStatus } from '../lib/evolution.js'
+import { logEvento } from '../services/log-evento.js'
 import { processarMensagem } from '../services/processar-mensagem.js'
 
 export const webhooksEvolutionRoutes = new Hono()
@@ -58,6 +59,22 @@ webhooksEvolutionRoutes.post('/evolution', async (c) => {
           .from('instancias_whatsapp')
           .update(update)
           .eq('id', instanceId)
+
+        // Loga mudancas de conexao (apenas CONECTADO/DESCONECTADO pra evitar ruido)
+        if (novoStatus === 'CONECTADO' || novoStatus === 'DESCONECTADO') {
+          logEvento({
+            userId: instancia.user_id,
+            categoria: 'WHATSAPP',
+            acao: novoStatus === 'CONECTADO' ? 'CONECTAR' : 'DESCONECTAR',
+            recursoTipo: 'WHATSAPP',
+            recursoId: instanceId,
+            descricao:
+              novoStatus === 'CONECTADO'
+                ? `WhatsApp conectado ${update.numero_conectado ? `(${update.numero_conectado})` : ''}`
+                : 'WhatsApp desconectado',
+            detalhes: { state, numero: update.numero_conectado },
+          })
+        }
         break
       }
 

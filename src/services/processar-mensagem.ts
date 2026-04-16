@@ -2,6 +2,7 @@ import { supabase } from '../lib/supabase.js'
 import { evolution } from '../lib/evolution.js'
 import { transcreverAudio } from '../lib/whisper.js'
 import { agendarRespostaIA } from './gerar-resposta-ia.js'
+import { logEvento } from './log-evento.js'
 
 const CORES_AVATAR = [
   '#3b82f6', '#10b981', '#8b5cf6', '#f59e0b',
@@ -390,6 +391,16 @@ export const processarMensagem = async (
         status: 'ENVIADA',
       })
 
+    logEvento({
+      userId,
+      categoria: 'CONVERSA',
+      acao: 'CRIAR',
+      recursoTipo: 'CONVERSA',
+      recursoId: conversaId,
+      descricao: `Nova conversa com ${nomeContato}`,
+      detalhes: { telefone: telefoneFmt, tipoMidia, agenteVinculado: !!agentePadraoId },
+    })
+
     // BUG FIX: Trigger IA tambem em conversas NOVAS (antes fazia `return` e nunca chamava)
     if (!isFromMe && agentePadraoId) {
       console.log(`[processarMensagem] nova conversa + agente ativo → trigger IA`)
@@ -415,6 +426,19 @@ export const processarMensagem = async (
   if (erroMsg) {
     console.error('[processarMensagem] erro ao inserir mensagem:', erroMsg)
     return
+  }
+
+  // Log de recebimento (apenas INCOMING — evita ruido de outgoing humano ja loggado)
+  if (!isFromMe) {
+    logEvento({
+      userId,
+      categoria: 'MENSAGEM',
+      acao: 'RECEBER_MSG',
+      recursoTipo: 'CONVERSA',
+      recursoId: conversaId,
+      descricao: `Mensagem recebida (${tipoMidia.toLowerCase()})`,
+      detalhes: { tipoMidia, preview: conteudo.substring(0, 80) },
+    })
   }
 
   // 3. Atualizar conversa

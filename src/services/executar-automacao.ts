@@ -1,5 +1,6 @@
 import { supabase } from '../lib/supabase.js'
 import { evolution } from '../lib/evolution.js'
+import { logEvento } from './log-evento.js'
 
 export type EventoAutomacao =
   | 'COMPRA_APROVADA'
@@ -296,6 +297,16 @@ export const executarAutomacao = async (
         .eq('id', conversaId)
 
       console.log(`[automacao:${auto.nome}] ✅ msg enviada pra ${tel.fmt}`)
+
+      logEvento({
+        userId: auto.user_id,
+        categoria: 'AUTOMACAO',
+        acao: 'ENVIAR_MSG',
+        recursoTipo: 'AUTOMACAO',
+        recursoId: auto.id,
+        descricao: `Automação "${auto.nome}" disparou mensagem`,
+        detalhes: { conversaId, telefone: tel.fmt, preview: msg.substring(0, 80) },
+      })
     } catch (e) {
       console.error(`[automacao:${auto.nome}] erro enviar msg:`, e)
     }
@@ -303,5 +314,14 @@ export const executarAutomacao = async (
     console.log(
       `[automacao:${auto.nome}] sem msg configurada, conversa criada/atualizada`
     )
+    logEvento({
+      userId: auto.user_id,
+      categoria: 'AUTOMACAO',
+      acao: 'ENVIAR_MSG',
+      recursoTipo: 'AUTOMACAO',
+      recursoId: auto.id,
+      descricao: `Automação "${auto.nome}" executou (sem mensagem configurada)`,
+      detalhes: { conversaId },
+    })
   }
 }

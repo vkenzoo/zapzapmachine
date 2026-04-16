@@ -4,6 +4,7 @@ import { auth } from '../middleware/auth.js'
 import { supabase } from '../lib/supabase.js'
 import { evolution, mapearStatus } from '../lib/evolution.js'
 import { env } from '../lib/env.js'
+import { logEvento } from '../services/log-evento.js'
 
 export const whatsappRoutes = new Hono<{
   Variables: { userId: string }
@@ -55,6 +56,15 @@ whatsappRoutes.post('/instancias', async (c) => {
       .from('instancias_whatsapp')
       .update({ evolution_instance_id: instancia.id })
       .eq('id', instancia.id)
+
+    logEvento({
+      userId,
+      categoria: 'WHATSAPP',
+      acao: 'CRIAR',
+      recursoTipo: 'WHATSAPP',
+      recursoId: instancia.id,
+      descricao: `Criou instância WhatsApp "${parsed.data.nome}"`,
+    })
 
     return c.json({
       id: instancia.id,
@@ -247,6 +257,16 @@ whatsappRoutes.post('/conversas/:conversaId/enviar', async (c) => {
     })
     .eq('id', conversaId)
 
+  logEvento({
+    userId,
+    categoria: 'MENSAGEM',
+    acao: 'ENVIAR_MSG',
+    recursoTipo: 'CONVERSA',
+    recursoId: conversaId,
+    descricao: 'Enviou mensagem de texto (humano)',
+    detalhes: { preview: parsed.data.texto.substring(0, 80) },
+  })
+
   return c.json(msg)
 })
 
@@ -411,6 +431,16 @@ whatsappRoutes.post('/conversas/:conversaId/enviar-midia', async (c) => {
     })
     .eq('id', conversaId)
 
+  logEvento({
+    userId,
+    categoria: 'MENSAGEM',
+    acao: 'ENVIAR_MSG',
+    recursoTipo: 'CONVERSA',
+    recursoId: conversaId,
+    descricao: `Enviou mídia (${tipoMidia.toLowerCase()})`,
+    detalhes: { tipoMidia, temLegenda: !!legenda },
+  })
+
   return c.json(msg)
 })
 
@@ -544,6 +574,18 @@ whatsappRoutes.patch('/conversas/:conversaId/agente', async (c) => {
     return c.json({ error: 'Erro ao vincular agente' }, 500)
   }
 
+  logEvento({
+    userId,
+    categoria: 'CONVERSA',
+    acao: 'VINCULAR_AGENTE',
+    recursoTipo: 'CONVERSA',
+    recursoId: conversaId,
+    descricao: parsed.data.agenteId
+      ? 'Vinculou agente à conversa'
+      : 'Desvinculou agente da conversa',
+    detalhes: { agenteId: parsed.data.agenteId },
+  })
+
   return c.json(data)
 })
 
@@ -574,6 +616,16 @@ whatsappRoutes.delete('/:id', async (c) => {
   }
 
   await supabase.from('instancias_whatsapp').delete().eq('id', id)
+
+  logEvento({
+    userId,
+    categoria: 'WHATSAPP',
+    acao: 'DELETAR',
+    recursoTipo: 'WHATSAPP',
+    recursoId: id,
+    descricao: 'Removeu instância WhatsApp',
+  })
+
   return c.json({ ok: true })
 })
 
@@ -610,6 +662,14 @@ whatsappRoutes.patch('/perfil', async (c) => {
     return c.json({ error: error.message }, 500)
   }
 
+  logEvento({
+    userId,
+    categoria: 'PERFIL',
+    acao: 'EDITAR',
+    descricao: `Atualizou perfil (${Object.keys(update).join(', ')})`,
+    detalhes: update,
+  })
+
   return c.json({ ok: true, ...update })
 })
 
@@ -644,6 +704,13 @@ whatsappRoutes.post('/perfil/upload-foto', async (c) => {
   // Salva na tabela usuarios
   await supabase.from('usuarios').update({ foto_url: fotoUrl }).eq('id', userId)
 
+  logEvento({
+    userId,
+    categoria: 'PERFIL',
+    acao: 'UPLOAD_FOTO',
+    descricao: 'Trocou foto de perfil',
+  })
+
   return c.json({ fotoUrl })
 })
 
@@ -674,6 +741,14 @@ whatsappRoutes.post('/toggle-agentes', async (c) => {
       .update({ agentes_desligados: true })
       .eq('id', userId)
 
+    logEvento({
+      userId,
+      categoria: 'PERFIL',
+      acao: 'TOGGLE_AGENTES_GLOBAL',
+      descricao: 'Desligou todos os agentes IA (modo humano global)',
+      detalhes: { desligados: true },
+    })
+
     return c.json({ ok: true, desligados: true })
   } else {
     // 1. Restaura conversas que tinham modo_anterior = IA
@@ -689,6 +764,14 @@ whatsappRoutes.post('/toggle-agentes', async (c) => {
       .update({ agentes_desligados: false })
       .eq('id', userId)
 
+    logEvento({
+      userId,
+      categoria: 'PERFIL',
+      acao: 'TOGGLE_AGENTES_GLOBAL',
+      descricao: 'Religou agentes IA',
+      detalhes: { desligados: false },
+    })
+
     return c.json({ ok: true, desligados: false })
   }
 })
@@ -699,10 +782,18 @@ whatsappRoutes.post('/toggle-agentes', async (c) => {
 
 whatsappRoutes.post('/ping-login', async (c) => {
   const userId = c.get('userId')
+  const ip = c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip') ?? undefined
   await supabase
     .from('usuarios')
     .update({ ultimo_login: new Date().toISOString() })
     .eq('id', userId)
+  logEvento({
+    userId,
+    categoria: 'AUTH',
+    acao: 'LOGIN',
+    descricao: 'Usuário fez login',
+    ip,
+  })
   return c.json({ ok: true })
 })
 
@@ -770,6 +861,17 @@ whatsappRoutes.post('/automacoes', async (c) => {
     .single()
 
   if (error) return c.json({ error: error.message }, 500)
+
+  logEvento({
+    userId,
+    categoria: 'AUTOMACAO',
+    acao: 'CRIAR',
+    recursoTipo: 'AUTOMACAO',
+    recursoId: (data as { id: string }).id,
+    descricao: `Criou automação "${d.nome}"`,
+    detalhes: { evento: d.evento, delayMinutos: d.delayMinutos, ativo: d.ativo },
+  })
+
   return c.json(data)
 })
 
@@ -805,6 +907,24 @@ whatsappRoutes.patch('/automacoes/:id', async (c) => {
     .single()
 
   if (error) return c.json({ error: error.message }, 500)
+
+  // Detecta mudanca importante de ativo
+  const acao =
+    d.ativo === true
+      ? 'ATIVAR'
+      : d.ativo === false
+      ? 'DESATIVAR'
+      : 'EDITAR'
+  logEvento({
+    userId,
+    categoria: 'AUTOMACAO',
+    acao,
+    recursoTipo: 'AUTOMACAO',
+    recursoId: id,
+    descricao: `${acao === 'ATIVAR' ? 'Ativou' : acao === 'DESATIVAR' ? 'Pausou' : 'Editou'} automação "${(data as { nome?: string }).nome ?? ''}"`,
+    detalhes: update,
+  })
+
   return c.json(data)
 })
 
@@ -820,5 +940,15 @@ whatsappRoutes.delete('/automacoes/:id', async (c) => {
     .eq('user_id', userId)
 
   if (error) return c.json({ error: error.message }, 500)
+
+  logEvento({
+    userId,
+    categoria: 'AUTOMACAO',
+    acao: 'DELETAR',
+    recursoTipo: 'AUTOMACAO',
+    recursoId: id,
+    descricao: 'Removeu automação',
+  })
+
   return c.json({ ok: true })
 })

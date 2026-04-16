@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { adminAuth } from '../middleware/admin.js'
 import { supabase } from '../lib/supabase.js'
 import { invalidarCacheRegras } from '../services/montar-prompt.js'
+import { logEvento } from '../services/log-evento.js'
 
 export const adminRoutes = new Hono<{
   Variables: { userId: string }
@@ -89,6 +90,7 @@ adminRoutes.get('/usuarios', async (c) => {
 })
 
 adminRoutes.patch('/usuarios/:id/role', async (c) => {
+  const adminUserId = c.get('userId')
   const id = c.req.param('id')
   const body = await c.req.json().catch(() => ({}))
   const parsed = z.object({ role: z.enum(['USER', 'ADMIN']) }).safeParse(body)
@@ -103,6 +105,17 @@ adminRoutes.patch('/usuarios/:id/role', async (c) => {
     .eq('id', id)
 
   if (error) return c.json({ error: error.message }, 500)
+
+  logEvento({
+    userId: adminUserId,
+    categoria: 'ADMIN',
+    acao: 'ALTERAR_ROLE',
+    recursoTipo: 'USUARIO',
+    recursoId: id,
+    descricao: `Alterou role para ${parsed.data.role}`,
+    detalhes: { alvoUserId: id, novaRole: parsed.data.role },
+  })
+
   return c.json({ ok: true, role: parsed.data.role })
 })
 
@@ -277,6 +290,95 @@ adminRoutes.get('/checkout/logs', async (c) => {
 })
 
 // ============================================================
+// EVENTOS — auditoria completa do sistema
+// ============================================================
+
+adminRoutes.get('/eventos/logs', async (c) => {
+  const page = Number(c.req.query('page') ?? '1')
+  const limit = Math.min(200, Number(c.req.query('limit') ?? '50'))
+  const offset = (page - 1) * limit
+  const categoria = c.req.query('categoria')
+  const userId = c.req.query('userId')
+  const search = c.req.query('search')
+
+  let query = supabase
+    .from('logs_eventos')
+    .select('*', { count: 'exact' })
+    .order('criado_em', { ascending: false })
+
+  if (categoria) query = query.eq('categoria', categoria)
+  if (userId) query = query.eq('user_id', userId)
+  if (search) query = query.ilike('descricao', `%${search}%`)
+
+  const { data, error, count } = await query.range(offset, offset + limit - 1)
+
+  if (error) return c.json({ error: error.message }, 500)
+
+  // Enriquece com nome do usuario
+  const userIds = new Set<string>()
+  for (const log of data ?? []) {
+    if (log.user_id) userIds.add(log.user_id as string)
+  }
+
+  const nomes: Record<string, string> = {}
+  if (userIds.size > 0) {
+    const { data: users } = await supabase
+      .from('usuarios')
+      .select('id, nome')
+      .in('id', Array.from(userIds))
+    for (const u of users ?? []) {
+      nomes[u.id as string] = (u.nome as string) ?? '—'
+    }
+  }
+
+  const items = (data ?? []).map((log) => ({
+    ...log,
+    user_nome: log.user_id ? (nomes[log.user_id as string] ?? '—') : null,
+  }))
+
+  return c.json({
+    items,
+    total: count ?? 0,
+    page,
+    limit,
+  })
+})
+
+adminRoutes.get('/eventos/stats', async (c) => {
+  // Contagem por categoria nos ultimos 7 dias
+  const seteDias = new Date(Date.now() - 7 * 86400 * 1000).toISOString()
+  const { data, error } = await supabase
+    .from('logs_eventos')
+    .select('categoria, acao')
+    .gte('criado_em', seteDias)
+
+  if (error) return c.json({ error: error.message }, 500)
+
+  const porCategoria: Record<string, number> = {}
+  const porAcao: Record<string, number> = {}
+  let total = 0
+
+  for (const log of data ?? []) {
+    const cat = (log.categoria as string) ?? 'SISTEMA'
+    const ac = (log.acao as string) ?? '—'
+    porCategoria[cat] = (porCategoria[cat] ?? 0) + 1
+    porAcao[ac] = (porAcao[ac] ?? 0) + 1
+    total++
+  }
+
+  return c.json({
+    periodo: '7d',
+    total,
+    porCategoria: Object.entries(porCategoria)
+      .map(([categoria, count]) => ({ categoria, count }))
+      .sort((a, b) => b.count - a.count),
+    porAcao: Object.entries(porAcao)
+      .map(([acao, count]) => ({ acao, count }))
+      .sort((a, b) => b.count - a.count),
+  })
+})
+
+// ============================================================
 // CONTROLE DE PROMPTS
 // ============================================================
 
@@ -323,6 +425,16 @@ adminRoutes.put('/prompts/:chave', async (c) => {
 
   // Invalida cache pra proxima chamada IA usar as novas regras
   invalidarCacheRegras()
+
+  logEvento({
+    userId,
+    categoria: 'ADMIN',
+    acao: 'EDITAR_PROMPT',
+    recursoTipo: 'PROMPT',
+    recursoId: chave,
+    descricao: `Editou regra global "${chave}"`,
+    detalhes: { ativo: parsed.data.ativo },
+  })
 
   return c.json({ ok: true })
 })
