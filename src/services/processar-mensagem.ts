@@ -326,6 +326,18 @@ export const processarMensagem = async (
     // Busca foto de perfil publica do contato no Evolution (best-effort)
     const fotoUrl = await evolution.fotoPerfil(instanceName, telefoneCru)
 
+    // Busca agente padrao ativo do usuario pra vincular automaticamente
+    let agentePadraoId: string | null = null
+    if (!isFromMe) {
+      const { data: agentesAtivos } = await supabase
+        .from('agentes')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('status', 'ATIVO')
+        .limit(1)
+      agentePadraoId = agentesAtivos?.[0]?.id ?? null
+    }
+
     const { data: novaConversa, error } = await supabase
       .from('conversas')
       .insert({
@@ -334,7 +346,8 @@ export const processarMensagem = async (
         nome_contato: nomeContato,
         telefone: telefoneFmt,
         status: 'EM_ATENDIMENTO',
-        modo: 'IA',
+        modo: agentePadraoId ? 'IA' : 'HUMANO',
+        agente_id: agentePadraoId,
         avatar_cor: avatarCor,
         foto_url: fotoUrl,
         ultima_mensagem: conteudo,
@@ -350,7 +363,7 @@ export const processarMensagem = async (
     }
     conversaId = novaConversa.id
 
-    // Como acabou de criar, ja atualiza e insere mensagem depois
+    // Insere primeira mensagem
     await supabase
       .from('mensagens')
       .insert({
@@ -363,6 +376,12 @@ export const processarMensagem = async (
         whatsapp_message_id: dados.key.id,
         status: 'ENVIADA',
       })
+
+    // BUG FIX: Trigger IA tambem em conversas NOVAS (antes fazia `return` e nunca chamava)
+    if (!isFromMe && agentePadraoId) {
+      console.log(`[processarMensagem] nova conversa + agente ativo → trigger IA`)
+      agendarRespostaIA(conversaId)
+    }
     return
   }
 
@@ -399,11 +418,10 @@ export const processarMensagem = async (
 
   // 4. Trigger IA — se mensagem INCOMING, modo=IA e agente vinculado
   // Usa debounce: agrupa msgs que chegam em sequencia (cliente escrevendo varias seguidas)
-  const conv = conversaExistente as typeof conversaExistente & {
-    modo?: string
-    agente_id?: string | null
-  }
-  if (!isFromMe && conv.modo === 'IA' && conv.agente_id) {
+  if (!isFromMe && conversaExistente.modo === 'IA' && conversaExistente.agente_id) {
+    console.log(`[processarMensagem] conversa existente + modo=IA + agente → trigger IA`)
     agendarRespostaIA(conversaId)
+  } else if (!isFromMe) {
+    console.log(`[processarMensagem] IA nao disparada: modo=${conversaExistente.modo} agente_id=${conversaExistente.agente_id}`)
   }
 }
