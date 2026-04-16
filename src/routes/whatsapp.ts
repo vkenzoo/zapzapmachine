@@ -777,6 +777,42 @@ whatsappRoutes.post('/toggle-agentes', async (c) => {
 })
 
 // ============================================================
+// STATUS DE WEBHOOK — valida se integracao esta recebendo eventos
+// ============================================================
+
+whatsappRoutes.get('/integracoes/:id/status-webhook', async (c) => {
+  const userId = c.get('userId')
+  const id = c.req.param('id')
+
+  const { data: integracao } = await supabase
+    .from('integracoes_checkout')
+    .select('id, ultimo_recebimento, criado_em')
+    .eq('id', id)
+    .eq('user_id', userId)
+    .maybeSingle()
+
+  if (!integracao) {
+    return c.json({ error: 'Integracao nao encontrada' }, 404)
+  }
+
+  // Contagem de webhooks nas ultimas 24h
+  const dia = new Date(Date.now() - 24 * 3600 * 1000).toISOString()
+  const { count } = await supabase
+    .from('logs_checkout')
+    .select('id', { count: 'exact', head: true })
+    .eq('integracao_id', id)
+    .gte('criado_em', dia)
+
+  return c.json({
+    integracaoId: id,
+    ultimoRecebimento: integracao.ultimo_recebimento,
+    criadoEm: integracao.criado_em,
+    total24h: count ?? 0,
+    jaRecebeu: !!integracao.ultimo_recebimento,
+  })
+})
+
+// ============================================================
 // PING LOGIN — atualiza ultimo_login do usuario
 // ============================================================
 
