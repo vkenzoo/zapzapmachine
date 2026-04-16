@@ -6,6 +6,7 @@ import { env } from './lib/env.js'
 import { whatsappRoutes } from './routes/whatsapp.js'
 import { webhooksEvolutionRoutes } from './routes/webhooks-evolution.js'
 import { webhooksCheckoutRoutes } from './routes/webhooks-checkout.js'
+import { adminRoutes } from './routes/admin.js'
 import { iniciarWorkerAutomacoes } from './services/worker-automacoes.js'
 
 const config = env()
@@ -25,6 +26,14 @@ app.use(
     allowHeaders: ['Content-Type', 'Authorization'],
   })
 )
+app.use(
+  '/admin/*',
+  cors({
+    origin: origins,
+    credentials: true,
+    allowHeaders: ['Content-Type', 'Authorization'],
+  })
+)
 
 // Health check
 app.get('/', (c) => c.text('RoboVendas Backend OK'))
@@ -38,6 +47,7 @@ app.get('/health', (c) =>
 
 // Rotas autenticadas
 app.route('/whatsapp', whatsappRoutes)
+app.route('/admin', adminRoutes)
 
 // Webhooks publicos (sem auth — validam por secret)
 app.route('/webhooks', webhooksEvolutionRoutes)

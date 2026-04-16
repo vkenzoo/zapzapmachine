@@ -694,6 +694,19 @@ whatsappRoutes.post('/toggle-agentes', async (c) => {
 })
 
 // ============================================================
+// PING LOGIN — atualiza ultimo_login do usuario
+// ============================================================
+
+whatsappRoutes.post('/ping-login', async (c) => {
+  const userId = c.get('userId')
+  await supabase
+    .from('usuarios')
+    .update({ ultimo_login: new Date().toISOString() })
+    .eq('id', userId)
+  return c.json({ ok: true })
+})
+
+// ============================================================
 // AUTOMAÇÕES
 // ============================================================
 

@@ -2,6 +2,7 @@ import { supabase } from '../lib/supabase.js'
 import { getLLM, type LLMMessage } from '../lib/llm.js'
 import { evolution } from '../lib/evolution.js'
 import { montarSystemPrompt, type BaseInput } from './montar-prompt.js'
+import { logIA } from './log-ia.js'
 
 const HISTORICO_MAX = 20
 const TAG_AJUDA = '[PRECISO_AJUDA]'
@@ -163,7 +164,7 @@ export const gerarRespostaIA = async (conversaId: string): Promise<void> => {
   }
 
   // 5. Monta prompt
-  const systemPrompt = montarSystemPrompt(
+  const systemPrompt = await montarSystemPrompt(
     {
       nome: agente.nome,
       objetivo: agente.objetivo as Parameters<
@@ -177,16 +178,49 @@ export const gerarRespostaIA = async (conversaId: string): Promise<void> => {
     bases
   )
 
-  // 6. Chama LLM
+  // 6. Chama LLM (com tracking de tokens)
   let resposta: string
+  const llm = getLLM()
+  const inicioLLM = Date.now()
   try {
-    const llm = getLLM()
     console.log(
       `[ia] gerando resposta (provider=${llm.name} model=${llm.model}, msgs=${messages.length})`
     )
-    resposta = await llm.generate({ systemPrompt, messages })
+    const result = await llm.generateWithUsage({ systemPrompt, messages })
+    resposta = result.text
+
+    // Loga uso (fire-and-forget)
+    logIA({
+      userId: conversa.user_id,
+      conversaId,
+      agenteId: conversa.agente_id,
+      provider: llm.name,
+      model: llm.model,
+      tipo: 'chat',
+      usage: result.usage,
+      duracaoMs: Date.now() - inicioLLM,
+      systemPromptPreview: systemPrompt,
+    })
   } catch (e) {
     console.error('[ia] erro LLM:', e)
+    // Loga erro
+    logIA({
+      userId: conversa.user_id,
+      conversaId,
+      agenteId: conversa.agente_id,
+      provider: llm.name,
+      model: llm.model,
+      tipo: 'chat',
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      },
+      duracaoMs: Date.now() - inicioLLM,
+      erro: true,
+      erroMensagem: e instanceof Error ? e.message : String(e),
+    })
     return
   }
 

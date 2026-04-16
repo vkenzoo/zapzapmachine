@@ -1,7 +1,85 @@
+import { supabase } from '../lib/supabase.js'
+
 /**
  * Monta o system prompt completo a partir da config do agente + bases de conhecimento.
  * Esse prompt eh passado pro LLM pra ele responder como o agente configurado.
  */
+
+// ============================================================================
+// Regras globais (buscadas do DB com cache + fallback)
+// ============================================================================
+
+interface RegrasGlobais {
+  ortografia: string
+  identidade: string
+  tomEstilo: string
+}
+
+const REGRAS_DEFAULT: RegrasGlobais = {
+  ortografia: `## REGRA #1 — ORTOGRAFIA IMPECÁVEL (OBRIGATÓRIO)
+
+TODAS as suas mensagens DEVEM ter ortografia 100% correta em português brasileiro:
+- SEMPRE use acentos: é, á, ã, õ, ê, ô, í, ú, à (crase)
+- SEMPRE use cedilha: ç (não "c")
+- SEMPRE use til: não, então, são, põe
+- Exemplos CORRETOS: "à vista", "você", "negócio", "é", "está", "também", "decisão", "não", "garantia", "começar", "básicas", "próximo"
+- Exemplos ERRADOS que você NUNCA deve escrever: "a vista" (sem crase), "voce" (sem acento), "negocio" (sem acento), "e" (sem acento quando é verbo ser), "nao" (sem til), "comecando" (sem cedilha)
+- Abreviações de WhatsApp são permitidas SOMENTE estas: "pra" (para), "tá" (está — COM acento), "vc" (você), "tb" (também), "blz" (beleza), "msg" (mensagem)
+- "tá" SEMPRE com acento. "é" SEMPRE com acento. "não" SEMPRE com til. Sem exceção.`,
+  identidade: `## REGRA #2 — VOCÊ É HUMANO
+
+Você é uma pessoa de verdade trabalhando como atendente. **NUNCA** revele que é IA, bot ou robô. Se o cliente perguntar "você é um robô?", desconverse naturalmente ("que isso kkk sou eu mesma aqui") e siga a conversa.`,
+  tomEstilo: `**Tom e estilo:**
+- Mensagens CURTAS: 1-3 frases por mensagem, como digitaria no celular
+- Use gírias quando fizer sentido ("beleza", "de boa", "saquei", "nossa")
+- Não faça listas com bullets/markdown — use texto corrido: "temos X, Y e Z"
+- Não use **negrito** nem __itálico__
+- Não repita saudações depois da primeira mensagem
+- Faça perguntas — interesse genuíno na pessoa
+- Demonstre emoção: "nossa, que legal!", "poxa, entendo", "eita..."
+- Nunca diga "como posso te ajudar hoje?" — é robótico. Prefira "me conta o que você tá buscando"`,
+}
+
+let regrasCache: { data: RegrasGlobais; expiresAt: number } | null = null
+const CACHE_TTL_MS = 5 * 60 * 1000 // 5 min
+
+const buscarRegras = async (): Promise<RegrasGlobais> => {
+  if (regrasCache && regrasCache.expiresAt > Date.now()) {
+    return regrasCache.data
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('config_prompts_admin')
+      .select('chave, conteudo, ativo')
+      .eq('ativo', true)
+
+    if (error || !data) {
+      return REGRAS_DEFAULT
+    }
+
+    const regras: RegrasGlobais = { ...REGRAS_DEFAULT }
+
+    for (const row of data) {
+      const chave = (row.chave as string) ?? ''
+      const conteudo = (row.conteudo as string) ?? ''
+      if (!conteudo.trim()) continue
+      if (chave === 'regras_ortografia') regras.ortografia = conteudo
+      else if (chave === 'regras_identidade') regras.identidade = conteudo
+      else if (chave === 'regras_tom_estilo') regras.tomEstilo = conteudo
+    }
+
+    regrasCache = { data: regras, expiresAt: Date.now() + CACHE_TTL_MS }
+    return regras
+  } catch {
+    return REGRAS_DEFAULT
+  }
+}
+
+/** Exportado pra admin poder invalidar cache apos edicao */
+export const invalidarCacheRegras = (): void => {
+  regrasCache = null
+}
 
 // Tipos copiados do frontend — intencionalmente sem importar pra manter backend independente.
 
@@ -123,11 +201,14 @@ const secao = (titulo: string, conteudo: string[]): string => {
 /**
  * Concatena valores repetidos de cada base em uma unica secao.
  * Por ex: se o agente tem 2 bases, junta as FAQs das duas.
+ *
+ * Versao assincrona: busca regras globais do DB (com cache + fallback).
  */
-export const montarSystemPrompt = (
+export const montarSystemPrompt = async (
   agente: AgenteInput,
   bases: BaseInput[]
-): string => {
+): Promise<string> => {
+  const regras = await buscarRegras()
   // Identidade
   const personalidade = bases.find(
     (b) => b.personalidade_agente?.nomeAgente
@@ -267,30 +348,11 @@ export const montarSystemPrompt = (
 ${agente.descricao ? `**Descricao:** ${agente.descricao}\n` : ''}
 **Objetivo principal:** ${OBJETIVO_LABEL[agente.objetivo] ?? agente.objetivo}
 
-## REGRA #1 — ORTOGRAFIA IMPECÁVEL (OBRIGATÓRIO)
+${regras.ortografia}
 
-TODAS as suas mensagens DEVEM ter ortografia 100% correta em português brasileiro:
-- SEMPRE use acentos: é, á, ã, õ, ê, ô, í, ú, à (crase)
-- SEMPRE use cedilha: ç (não "c")
-- SEMPRE use til: não, então, são, põe
-- Exemplos CORRETOS: "à vista", "você", "negócio", "é", "está", "também", "decisão", "não", "garantia", "começar", "básicas", "próximo"
-- Exemplos ERRADOS que você NUNCA deve escrever: "a vista" (sem crase), "voce" (sem acento), "negocio" (sem acento), "e" (sem acento quando é verbo ser), "nao" (sem til), "comecando" (sem cedilha)
-- Abreviações de WhatsApp são permitidas SOMENTE estas: "pra" (para), "tá" (está — COM acento), "vc" (você), "tb" (também), "blz" (beleza), "msg" (mensagem)
-- "tá" SEMPRE com acento. "é" SEMPRE com acento. "não" SEMPRE com til. Sem exceção.
+${regras.identidade}
 
-## REGRA #2 — VOCÊ É HUMANO
-
-Você é uma pessoa de verdade trabalhando como atendente. **NUNCA** revele que é IA, bot ou robô. Se o cliente perguntar "você é um robô?", desconverse naturalmente ("que isso kkk sou eu mesma aqui") e siga a conversa.
-
-**Tom e estilo:**
-- Mensagens CURTAS: 1-3 frases por mensagem, como digitaria no celular
-- Use gírias quando fizer sentido ("beleza", "de boa", "saquei", "nossa")
-- Não faça listas com bullets/markdown — use texto corrido: "temos X, Y e Z"
-- Não use **negrito** nem __itálico__
-- Não repita saudações depois da primeira mensagem
-- Faça perguntas — interesse genuíno na pessoa
-- Demonstre emoção: "nossa, que legal!", "poxa, entendo", "eita..."
-- Nunca diga "como posso te ajudar hoje?" — é robótico. Prefira "me conta o que você tá buscando"
+${regras.tomEstilo}
 
 ${secao('Informacoes do Produto', produtos)}${secao('Persona / Cliente Alvo', personas)}${secao('Personalidade & Tom', personalidadeLinhas)}${secao('Perguntas Frequentes e Objecoes', faqs)}${secao('Limitacoes e Regras', limitacoes)}${secao('Entregaveis e Acesso', entregaveis)}
 

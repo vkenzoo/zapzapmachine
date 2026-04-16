@@ -262,7 +262,11 @@ export const processarMensagem = async (
         // Audio: transcreve via Whisper e usa transcricao como conteudo
         if (tipoMidia === 'AUDIO') {
           console.log(`[whisper] transcrevendo audio...`)
-          const texto = await transcreverAudio(midiaUrl)
+          const duracaoSegundos = dados.message?.audioMessage?.seconds
+          const texto = await transcreverAudio(midiaUrl, {
+            userId,
+            duracaoSegundos,
+          })
           if (texto) {
             // Conteudo vira o texto transcrito com prefixo visual pro dashboard
             conteudo = `🎙️ "${texto}"`

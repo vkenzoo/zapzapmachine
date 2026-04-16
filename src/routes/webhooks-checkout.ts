@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { supabase } from '../lib/supabase.js'
 import { dispararAutomacoes, type EventoAutomacao } from '../services/executar-automacao.js'
+import { logCheckout } from '../services/log-checkout.js'
 
 export const webhooksCheckoutRoutes = new Hono()
 
@@ -62,6 +63,15 @@ webhooksCheckoutRoutes.post('/hotmart', async (c) => {
   }
 
   if (!eventoInterno) {
+    logCheckout({
+      integracaoId: integracao.id,
+      userId: integracao.user_id,
+      provedor: 'HOTMART',
+      evento: evento || status || 'desconhecido',
+      statusWebhook: 'IGNORADO',
+      payload: body,
+      erroMensagem: 'evento nao mapeado',
+    })
     return c.json({ ok: true, ignored: true, reason: `evento ${evento} nao mapeado` })
   }
 
@@ -69,6 +79,15 @@ webhooksCheckoutRoutes.post('/hotmart', async (c) => {
   const product = body.data?.product
 
   if (!buyer?.checkout_phone || !product?.id) {
+    logCheckout({
+      integracaoId: integracao.id,
+      userId: integracao.user_id,
+      provedor: 'HOTMART',
+      evento: eventoInterno,
+      statusWebhook: 'ERRO',
+      payload: body,
+      erroMensagem: 'Payload incompleto (phone ou product.id)',
+    })
     return c.json({ error: 'Payload incompleto' }, 400)
   }
 
@@ -80,6 +99,15 @@ webhooksCheckoutRoutes.post('/hotmart', async (c) => {
     telefone: buyer.checkout_phone,
     idExternoProduto: String(product.id),
     nomeProduto: product.name,
+  })
+
+  logCheckout({
+    integracaoId: integracao.id,
+    userId: integracao.user_id,
+    provedor: 'HOTMART',
+    evento: eventoInterno,
+    statusWebhook: 'SUCESSO',
+    payload: { evento, status, buyer: { name: buyer.name, email: buyer.email }, product },
   })
 
   return c.json(resultado)
@@ -122,6 +150,15 @@ webhooksCheckoutRoutes.post('/kiwify', async (c) => {
   }
 
   if (!eventoInterno) {
+    logCheckout({
+      integracaoId: integracao.id,
+      userId: integracao.user_id,
+      provedor: 'KIWIFY',
+      evento: status || 'desconhecido',
+      statusWebhook: 'IGNORADO',
+      payload: body,
+      erroMensagem: 'status nao mapeado',
+    })
     return c.json({ ok: true, ignored: true, reason: `status ${status} nao mapeado` })
   }
 
@@ -129,6 +166,15 @@ webhooksCheckoutRoutes.post('/kiwify', async (c) => {
   const product = body.Product
 
   if (!customer?.mobile || !product?.product_id) {
+    logCheckout({
+      integracaoId: integracao.id,
+      userId: integracao.user_id,
+      provedor: 'KIWIFY',
+      evento: eventoInterno,
+      statusWebhook: 'ERRO',
+      payload: body,
+      erroMensagem: 'Payload incompleto (mobile ou product_id)',
+    })
     return c.json({ error: 'Payload incompleto' }, 400)
   }
 
@@ -145,6 +191,15 @@ webhooksCheckoutRoutes.post('/kiwify', async (c) => {
     telefone: customer.mobile,
     idExternoProduto: product.product_id,
     nomeProduto: product.product_name,
+  })
+
+  logCheckout({
+    integracaoId: integracao.id,
+    userId: integracao.user_id,
+    provedor: 'KIWIFY',
+    evento: eventoInterno,
+    statusWebhook: 'SUCESSO',
+    payload: { status, customer: { name: nome, email: customer.email }, product },
   })
 
   return c.json(resultado)
@@ -181,6 +236,15 @@ webhooksCheckoutRoutes.post('/ticto', async (c) => {
   }
 
   if (!eventoInterno) {
+    logCheckout({
+      integracaoId: integracao.id,
+      userId: integracao.user_id,
+      provedor: 'TICTO',
+      evento: status || 'desconhecido',
+      statusWebhook: 'IGNORADO',
+      payload: body,
+      erroMensagem: 'status nao mapeado',
+    })
     return c.json({ ok: true, ignored: true, reason: `status ${status} nao mapeado` })
   }
 
@@ -188,6 +252,15 @@ webhooksCheckoutRoutes.post('/ticto', async (c) => {
   const product = body.product
 
   if (!customer?.phone || !product?.id) {
+    logCheckout({
+      integracaoId: integracao.id,
+      userId: integracao.user_id,
+      provedor: 'TICTO',
+      evento: eventoInterno,
+      statusWebhook: 'ERRO',
+      payload: body,
+      erroMensagem: 'Payload incompleto (phone ou product.id)',
+    })
     return c.json({ error: 'Payload incompleto' }, 400)
   }
 
@@ -199,6 +272,15 @@ webhooksCheckoutRoutes.post('/ticto', async (c) => {
     telefone: customer.phone,
     idExternoProduto: String(product.id),
     nomeProduto: product.name,
+  })
+
+  logCheckout({
+    integracaoId: integracao.id,
+    userId: integracao.user_id,
+    provedor: 'TICTO',
+    evento: eventoInterno,
+    statusWebhook: 'SUCESSO',
+    payload: { status, customer: { name: customer.name, email: customer.email }, product },
   })
 
   return c.json(resultado)
