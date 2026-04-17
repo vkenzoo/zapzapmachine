@@ -8,6 +8,7 @@ import { webhooksEvolutionRoutes } from './routes/webhooks-evolution.js'
 import { webhooksCheckoutRoutes } from './routes/webhooks-checkout.js'
 import { adminRoutes } from './routes/admin.js'
 import { iniciarWorkerAutomacoes } from './services/worker-automacoes.js'
+import { rateLimit } from './middleware/rate-limit.js'
 
 const config = env()
 
@@ -42,6 +43,33 @@ app.get('/health', (c) =>
     status: 'ok',
     timestamp: new Date().toISOString(),
     env: config.NODE_ENV,
+  })
+)
+
+// Rate limiting — defesa contra brute force + DoS
+// Webhooks publicos: 120 req/min por IP (provedores enviam em bursts)
+app.use(
+  '/webhooks/*',
+  rateLimit({
+    max: 120,
+    windowMs: 60_000,
+    message: 'Muitas requisicoes ao webhook. Aguarde.',
+  })
+)
+// Rotas autenticadas: 300 req/min por IP (uso normal alto)
+app.use(
+  '/whatsapp/*',
+  rateLimit({
+    max: 300,
+    windowMs: 60_000,
+  })
+)
+// Admin: 120 req/min (uso menos intenso)
+app.use(
+  '/admin/*',
+  rateLimit({
+    max: 120,
+    windowMs: 60_000,
   })
 )
 

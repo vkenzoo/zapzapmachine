@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabase.js'
 import { evolution, mapearStatus } from '../lib/evolution.js'
 import { env } from '../lib/env.js'
 import { logEvento } from '../services/log-evento.js'
+import { httpError } from '../lib/http-error.js'
 
 export const whatsappRoutes = new Hono<{
   Variables: { userId: string }
@@ -272,11 +273,40 @@ whatsappRoutes.post('/conversas/:conversaId/enviar', async (c) => {
 
 const enviarMidiaSchema = z.object({
   tipoMidia: z.enum(['IMAGEM', 'AUDIO', 'VIDEO', 'DOCUMENTO']),
-  base64: z.string().min(1), // base64 bruto (sem prefix data:)
-  mimetype: z.string().min(1),
-  fileName: z.string().optional(),
-  legenda: z.string().optional(),
+  base64: z.string().min(1).max(22_000_000), // ~16MB decoded (WhatsApp max)
+  mimetype: z.string().min(1).max(100),
+  fileName: z.string().max(255).optional(),
+  legenda: z.string().max(4096).optional(),
 })
+
+// Whitelist de mimetypes por tipo de midia (WhatsApp suportados)
+const MIMES_POR_TIPO: Record<string, Set<string>> = {
+  IMAGEM: new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp']),
+  AUDIO: new Set([
+    'audio/ogg',
+    'audio/opus',
+    'audio/mpeg',
+    'audio/mp3',
+    'audio/mp4',
+    'audio/m4a',
+    'audio/amr',
+    'audio/aac',
+    'audio/webm',
+  ]),
+  VIDEO: new Set(['video/mp4', 'video/3gpp', 'video/quicktime', 'video/webm']),
+  DOCUMENTO: new Set([
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-powerpoint',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'text/plain',
+    'text/csv',
+  ]),
+}
+const MAX_MIDIA_BYTES = 16 * 1024 * 1024 // WhatsApp limit
 
 /**
  * POST /whatsapp/conversas/:conversaId/enviar-midia
@@ -293,6 +323,28 @@ whatsappRoutes.post('/conversas/:conversaId/enviar-midia', async (c) => {
   }
 
   const { tipoMidia, base64, mimetype, fileName, legenda } = parsed.data
+
+  // Valida mimetype contra whitelist do tipo
+  const mimeLimpo = mimetype.toLowerCase().split(';')[0].trim()
+  const permitidos = MIMES_POR_TIPO[tipoMidia]
+  if (!permitidos || !permitidos.has(mimeLimpo)) {
+    return c.json(
+      { error: `Tipo de arquivo nao permitido para ${tipoMidia}` },
+      400
+    )
+  }
+
+  // Valida tamanho (evita DoS via base64 gigante)
+  const bufferTemp = Buffer.from(base64, 'base64')
+  if (bufferTemp.length > MAX_MIDIA_BYTES) {
+    return c.json(
+      { error: `Arquivo muito grande. Maximo ${MAX_MIDIA_BYTES / 1024 / 1024}MB.` },
+      400
+    )
+  }
+  if (bufferTemp.length < 32) {
+    return c.json({ error: 'Arquivo invalido (muito pequeno)' }, 400)
+  }
 
   // 1. Busca conversa + instancia
   const { data: conversa } = await supabase
@@ -659,7 +711,7 @@ whatsappRoutes.patch('/perfil', async (c) => {
     .eq('id', userId)
 
   if (error) {
-    return c.json({ error: error.message }, 500)
+    return httpError(c, 500, 'Erro ao atualizar perfil', error)
   }
 
   logEvento({
@@ -677,6 +729,15 @@ whatsappRoutes.patch('/perfil', async (c) => {
  * POST /whatsapp/perfil/upload-foto
  * Recebe base64 da foto, sobe no Storage, retorna URL publica.
  */
+// Whitelist de mimetypes de imagem permitidos pro avatar
+const MIMES_FOTO_PERMITIDOS = new Set([
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/webp',
+])
+const MAX_FOTO_BYTES = 5 * 1024 * 1024 // 5MB
+
 whatsappRoutes.post('/perfil/upload-foto', async (c) => {
   const userId = c.get('userId')
   const body = await c.req.json().catch(() => ({}))
@@ -686,16 +747,45 @@ whatsappRoutes.post('/perfil/upload-foto', async (c) => {
     return c.json({ error: 'base64 e mimetype obrigatorios' }, 400)
   }
 
-  const ext = mimetype.split('/')[1]?.split(';')[0] ?? 'jpg'
-  const path = `${userId}/avatar.${ext}`
+  // Valida mimetype contra whitelist
+  const mimeLimpo = mimetype.toLowerCase().split(';')[0].trim()
+  if (!MIMES_FOTO_PERMITIDOS.has(mimeLimpo)) {
+    return c.json(
+      { error: 'Tipo de arquivo nao permitido. Use JPEG, PNG ou WebP.' },
+      400
+    )
+  }
+
   const buffer = Buffer.from(base64, 'base64')
+
+  // Valida tamanho
+  if (buffer.length > MAX_FOTO_BYTES) {
+    return c.json(
+      { error: `Arquivo muito grande. Maximo ${MAX_FOTO_BYTES / 1024 / 1024}MB.` },
+      400
+    )
+  }
+  if (buffer.length < 100) {
+    return c.json({ error: 'Arquivo invalido (muito pequeno)' }, 400)
+  }
+
+  // Extensao derivada do mimetype validado
+  const extMap: Record<string, string> = {
+    'image/jpeg': 'jpg',
+    'image/jpg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+  }
+  const ext = extMap[mimeLimpo]
+  const path = `${userId}/avatar.${ext}`
 
   const { error: upErr } = await supabase.storage
     .from('avatars')
-    .upload(path, buffer, { contentType: mimetype, upsert: true })
+    .upload(path, buffer, { contentType: mimeLimpo, upsert: true })
 
   if (upErr) {
-    return c.json({ error: upErr.message }, 500)
+    console.error('[upload-foto] supabase storage:', upErr)
+    return c.json({ error: 'Erro ao salvar foto' }, 500)
   }
 
   const { data } = supabase.storage.from('avatars').getPublicUrl(path)
@@ -864,7 +954,7 @@ whatsappRoutes.get('/automacoes', async (c) => {
     .eq('user_id', userId)
     .order('criado_em', { ascending: false })
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return httpError(c, 500, 'Erro ao processar requisicao', error)
   return c.json(data ?? [])
 })
 
@@ -896,7 +986,7 @@ whatsappRoutes.post('/automacoes', async (c) => {
     .select('*')
     .single()
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return httpError(c, 500, 'Erro ao processar requisicao', error)
 
   logEvento({
     userId,
@@ -942,7 +1032,7 @@ whatsappRoutes.patch('/automacoes/:id', async (c) => {
     .select('*')
     .single()
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return httpError(c, 500, 'Erro ao processar requisicao', error)
 
   // Detecta mudanca importante de ativo
   const acao =
@@ -975,7 +1065,7 @@ whatsappRoutes.delete('/automacoes/:id', async (c) => {
     .eq('id', id)
     .eq('user_id', userId)
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return httpError(c, 500, 'Erro ao processar requisicao', error)
 
   logEvento({
     userId,

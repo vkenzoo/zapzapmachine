@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { timingSafeEqual } from 'node:crypto'
 import { supabase } from '../lib/supabase.js'
 import {
   dispararAutomacoes,
@@ -9,22 +10,49 @@ import { logCheckout } from '../services/log-checkout.js'
 
 export const webhooksCheckoutRoutes = new Hono()
 
+/** Comparacao constant-time de strings — protege contra timing attacks */
+const secretsIguais = (a: string, b: string): boolean => {
+  if (a.length !== b.length) return false
+  try {
+    return timingSafeEqual(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'))
+  } catch {
+    return false
+  }
+}
+
 /**
  * Valida o webhook_secret e retorna a integracao correspondente.
+ * Usa comparacao constant-time pra evitar timing attacks.
  */
 const validarSecret = async (
   provedor: string,
   secret: string | undefined
 ): Promise<{ id: string; user_id: string } | null> => {
-  if (!secret) return null
-  const { data } = await supabase
+  if (!secret || secret.length < 16 || secret.length > 128) return null
+
+  // Busca todas as integracoes ATIVAS do provedor (N pequeno)
+  const { data: integracoes } = await supabase
     .from('integracoes_checkout')
-    .select('id, user_id')
+    .select('id, user_id, webhook_secret')
     .eq('provedor', provedor)
-    .eq('webhook_secret', secret)
     .eq('status', 'ATIVO')
-    .maybeSingle()
-  return data
+
+  if (!integracoes || integracoes.length === 0) return null
+
+  // Compara cada uma com constant-time (sempre roda tudo, nao short-circuit)
+  let matched: { id: string; user_id: string } | null = null
+  for (const int of integracoes) {
+    const stored = (int as { webhook_secret?: string }).webhook_secret ?? ''
+    if (secretsIguais(stored, secret)) {
+      matched = {
+        id: (int as { id: string }).id,
+        user_id: (int as { user_id: string }).user_id,
+      }
+      // nao break — mantem constant-time total
+    }
+  }
+
+  return matched
 }
 
 /** Pega numero de diferentes formatos: "997", "997,00", "R$ 997", 99700 (centavos) */

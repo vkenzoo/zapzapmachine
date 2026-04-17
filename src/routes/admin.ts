@@ -4,6 +4,7 @@ import { adminAuth } from '../middleware/admin.js'
 import { supabase } from '../lib/supabase.js'
 import { invalidarCacheRegras } from '../services/montar-prompt.js'
 import { logEvento } from '../services/log-evento.js'
+import { httpError } from '../lib/http-error.js'
 
 export const adminRoutes = new Hono<{
   Variables: { userId: string }
@@ -68,7 +69,7 @@ adminRoutes.get('/usuarios', async (c) => {
     .select('id, nome, role, plano, status, criado_em, ultimo_login, foto_url, agentes_desligados')
     .order('criado_em', { ascending: false })
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return httpError(c, 500, 'Erro ao processar requisicao', error)
 
   // Busca emails via auth admin API
   const emails: Record<string, string> = {}
@@ -104,7 +105,7 @@ adminRoutes.patch('/usuarios/:id/role', async (c) => {
     .update({ role: parsed.data.role })
     .eq('id', id)
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return httpError(c, 500, 'Erro ao processar requisicao', error)
 
   logEvento({
     userId: adminUserId,
@@ -133,7 +134,7 @@ adminRoutes.get('/ia/gastos', async (c) => {
     .gte('criado_em', trintaDias)
     .order('criado_em', { ascending: false })
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return httpError(c, 500, 'Erro ao processar requisicao', error)
 
   // Agrupa por dia
   const porDia: Record<string, { custo: number; chamadas: number; tokens: number }> = {}
@@ -197,7 +198,7 @@ adminRoutes.get('/ia/gastos-por-usuario', async (c) => {
     .from('logs_ia')
     .select('user_id, custo_usd, input_tokens, output_tokens')
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return httpError(c, 500, 'Erro ao processar requisicao', error)
 
   const porUsuario: Record<
     string,
@@ -254,7 +255,7 @@ adminRoutes.get('/ia/logs', async (c) => {
     .order('criado_em', { ascending: false })
     .range(offset, offset + limit - 1)
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return httpError(c, 500, 'Erro ao processar requisicao', error)
 
   return c.json({
     items: data ?? [],
@@ -279,7 +280,7 @@ adminRoutes.get('/checkout/logs', async (c) => {
     .order('criado_em', { ascending: false })
     .range(offset, offset + limit - 1)
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return httpError(c, 500, 'Erro ao processar requisicao', error)
 
   return c.json({
     items: data ?? [],
@@ -312,7 +313,7 @@ adminRoutes.get('/eventos/logs', async (c) => {
 
   const { data, error, count } = await query.range(offset, offset + limit - 1)
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return httpError(c, 500, 'Erro ao processar requisicao', error)
 
   // Enriquece com nome do usuario
   const userIds = new Set<string>()
@@ -352,7 +353,7 @@ adminRoutes.get('/eventos/stats', async (c) => {
     .select('categoria, acao')
     .gte('criado_em', seteDias)
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return httpError(c, 500, 'Erro ao processar requisicao', error)
 
   const porCategoria: Record<string, number> = {}
   const porAcao: Record<string, number> = {}
@@ -388,7 +389,7 @@ adminRoutes.get('/prompts', async (c) => {
     .select('*')
     .order('chave', { ascending: true })
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return httpError(c, 500, 'Erro ao processar requisicao', error)
   return c.json(data ?? [])
 })
 
@@ -421,7 +422,7 @@ adminRoutes.put('/prompts/:chave', async (c) => {
     .update(update)
     .eq('chave', chave)
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return httpError(c, 500, 'Erro ao processar requisicao', error)
 
   // Invalida cache pra proxima chamada IA usar as novas regras
   invalidarCacheRegras()

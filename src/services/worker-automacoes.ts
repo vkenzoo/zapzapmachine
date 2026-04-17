@@ -6,13 +6,16 @@ const INTERVALO_MS = 30 * 1000 // Checa a cada 30s
 /**
  * Worker que processa a fila `automacoes_pendentes`.
  * Roda em loop (setInterval) no boot do servidor.
+ *
+ * Concorrencia safe: cada pendente e "claimed" atomicamente via
+ * UPDATE filtrado por status=PENDENTE. Se 2 workers pegam a mesma
+ * fila, so um consegue claimar e o outro pula.
  */
 export const iniciarWorkerAutomacoes = (): void => {
   console.log(`[worker-automacoes] iniciando (intervalo=${INTERVALO_MS}ms)`)
 
   const processar = async () => {
     try {
-      // Busca automacoes pendentes cujo executar_em ja passou
       const agora = new Date().toISOString()
       const { data: pendentes, error } = await supabase
         .from('automacoes_pendentes')
@@ -28,9 +31,30 @@ export const iniciarWorkerAutomacoes = (): void => {
 
       if (!pendentes || pendentes.length === 0) return
 
-      console.log(`[worker-automacoes] processando ${pendentes.length} pendentes`)
+      console.log(`[worker-automacoes] ${pendentes.length} candidatos na fila`)
+
+      let processados = 0
 
       for (const pendente of pendentes) {
+        const pendenteId = (pendente as { id: string }).id
+
+        // Claim atomic: tenta virar PROCESSANDO apenas se ainda esta PENDENTE.
+        // Se outro worker ja pegou, .single() retorna null e pulamos.
+        const { data: claimed } = await supabase
+          .from('automacoes_pendentes')
+          .update({ status: 'PROCESSANDO' })
+          .eq('id', pendenteId)
+          .eq('status', 'PENDENTE')
+          .select('id')
+          .maybeSingle()
+
+        if (!claimed) {
+          // Outro worker pegou esse registro ou status mudou — pula
+          continue
+        }
+
+        processados++
+
         const auto = (pendente as { automacoes?: unknown }).automacoes as
           | {
               id: string
@@ -48,7 +72,6 @@ export const iniciarWorkerAutomacoes = (): void => {
           | null
 
         if (!auto || !auto.ativo) {
-          // Automacao foi deletada ou desativada — marca como falhou
           await supabase
             .from('automacoes_pendentes')
             .update({
@@ -56,7 +79,7 @@ export const iniciarWorkerAutomacoes = (): void => {
               executada_em: new Date().toISOString(),
               erro: 'Automacao nao encontrada ou inativa',
             })
-            .eq('id', (pendente as { id: string }).id)
+            .eq('id', pendenteId)
           continue
         }
 
@@ -73,7 +96,7 @@ export const iniciarWorkerAutomacoes = (): void => {
               status: 'EXECUTADA',
               executada_em: new Date().toISOString(),
             })
-            .eq('id', (pendente as { id: string }).id)
+            .eq('id', pendenteId)
         } catch (e) {
           console.error(`[worker-automacoes] erro executar ${auto.nome}:`, e)
           await supabase
@@ -83,8 +106,12 @@ export const iniciarWorkerAutomacoes = (): void => {
               executada_em: new Date().toISOString(),
               erro: e instanceof Error ? e.message : String(e),
             })
-            .eq('id', (pendente as { id: string }).id)
+            .eq('id', pendenteId)
         }
+      }
+
+      if (processados > 0) {
+        console.log(`[worker-automacoes] processou ${processados} pendentes`)
       }
     } catch (e) {
       console.error('[worker-automacoes] erro no loop:', e)
