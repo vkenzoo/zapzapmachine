@@ -90,6 +90,63 @@ adminRoutes.get('/usuarios', async (c) => {
   return c.json(result)
 })
 
+adminRoutes.post('/usuarios', async (c) => {
+  const adminUserId = c.get('userId')
+  const body = await c.req.json().catch(() => ({}))
+  const parsed = z
+    .object({
+      nome: z.string().trim().min(2, 'Nome muito curto').max(80),
+      email: z.string().email('E-mail invalido').transform((v) => v.trim().toLowerCase()),
+      senha: z.string().min(10, 'Senha precisa ter no minimo 10 caracteres'),
+      role: z.enum(['USER', 'ADMIN']).optional().default('USER'),
+    })
+    .safeParse(body)
+
+  if (!parsed.success) {
+    return c.json({ error: parsed.error.issues[0]?.message ?? 'Dados invalidos' }, 400)
+  }
+
+  const { nome, email, senha, role } = parsed.data
+
+  const { data: created, error: createErr } = await supabase.auth.admin.createUser({
+    email,
+    password: senha,
+    email_confirm: true,
+    user_metadata: {
+      nome,
+      must_change_password: true,
+    },
+  })
+
+  if (createErr || !created?.user) {
+    const msg = createErr?.message ?? 'Erro ao criar usuario'
+    const status = msg.toLowerCase().includes('already') ? 409 : 500
+    return c.json({ error: status === 409 ? 'E-mail ja cadastrado' : msg }, status)
+  }
+
+  const novoId = created.user.id
+
+  // Garante linha na tabela usuarios (caso trigger nao rode) + aplica role escolhida
+  await supabase
+    .from('usuarios')
+    .upsert(
+      { id: novoId, nome, role, plano: 'STARTER', status: 'ATIVO' },
+      { onConflict: 'id' }
+    )
+
+  logEvento({
+    userId: adminUserId,
+    categoria: 'ADMIN',
+    acao: 'CRIAR_USUARIO',
+    recursoTipo: 'USUARIO',
+    recursoId: novoId,
+    descricao: `Criou usuario ${email} (${role})`,
+    detalhes: { email, nome, role },
+  })
+
+  return c.json({ ok: true, id: novoId, email, nome, role }, 201)
+})
+
 adminRoutes.patch('/usuarios/:id/role', async (c) => {
   const adminUserId = c.get('userId')
   const id = c.req.param('id')
