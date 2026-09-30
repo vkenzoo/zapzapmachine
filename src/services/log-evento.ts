@@ -27,6 +27,7 @@ export type AcaoEvento =
   | 'TOGGLE_AGENTES_GLOBAL'
   | 'UPLOAD_FOTO'
   | 'ALTERAR_ROLE'
+  | 'CRIAR_USUARIO'
   | 'EDITAR_PROMPT'
   | 'WEBHOOK_RECEBIDO'
 
