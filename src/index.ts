@@ -47,11 +47,13 @@ app.get('/health', (c) =>
 )
 
 // Rate limiting — defesa contra brute force + DoS
-// Webhooks publicos: 120 req/min por IP (provedores enviam em bursts)
+// Webhooks Evolution: sem limite (mesmo IP interno da VPS, dezenas de instancias em burst).
+// Manter limite aqui derruba webhooks e PERDE mensagem de cliente.
+// Checkout continua limitado no seu proprio middleware.
 app.use(
   '/webhooks/*',
   rateLimit({
-    max: 120,
+    max: 6000,
     windowMs: 60_000,
     message: 'Muitas requisicoes ao webhook. Aguarde.',
   })
